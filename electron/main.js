@@ -26,6 +26,16 @@ async function waitForServer(url, timeoutMs = 12000) {
   throw new Error(`Local server did not respond: ${url}`)
 }
 
+async function waitForServerAddress(server, timeoutMs = 12000) {
+  const startedAt = Date.now()
+  while (Date.now() - startedAt < timeoutMs) {
+    const address = server.address()
+    if (typeof address === 'object' && address?.port) return address
+    await new Promise((resolve) => setTimeout(resolve, 50))
+  }
+  throw new Error('Local server did not expose a listening address')
+}
+
 async function startLocalServer() {
   process.env.PORT = '0'
   process.env.WIN_STATUS_INSIGHT_APP_ROOT = app.getAppPath()
@@ -35,9 +45,8 @@ async function startLocalServer() {
     : path.join(app.getAppPath(), 'scripts', 'collect-status.ps1')
 
   serverModule = await import('../server/index.js')
-  const address = serverModule.server.address()
-  const actualPort = typeof address === 'object' && address ? address.port : 5274
-  return `http://127.0.0.1:${actualPort}`
+  const address = await waitForServerAddress(serverModule.server)
+  return `http://127.0.0.1:${address.port}`
 }
 
 async function createWindow() {

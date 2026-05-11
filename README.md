@@ -4,6 +4,11 @@ WinStatusInsight 是一个本地 Windows 状态分析桌面工具，用来快速
 
 ![WinStatusInsight dashboard](docs/assets/win-status-insight-dashboard.png)
 
+## 下载
+
+- [便携版 WinStatusInsight.exe](https://github.com/zgxhh/WinStatusInsight/releases/latest/download/WinStatusInsight.exe)
+- [安装版 WinStatusInsight-Setup-1.0.0.exe](https://github.com/zgxhh/WinStatusInsight/releases/latest/download/WinStatusInsight-Setup-1.0.0.exe)
+
 ## 功能
 
 - 读取 Windows 当前 CPU、内存和进程状态。
@@ -13,6 +18,24 @@ WinStatusInsight 是一个本地 Windows 状态分析桌面工具，用来快速
 - 支持停止可确认的本地项目进程，并保护当前分析面板不被误停。
 - 支持保存历史快照，并做两次读取结果的历史对比。
 - 支持打包为 Windows 便携版和 NSIS 安装版。
+
+## 产品截图
+
+### 应用聚合
+
+![应用聚合](docs/assets/win-status-insight-dashboard.png)
+
+### 本地项目
+
+![本地项目](docs/assets/win-status-insight-local-projects.png)
+
+### 进程排行
+
+![进程排行](docs/assets/win-status-insight-process-ranking.png)
+
+### 历史记录
+
+![历史记录](docs/assets/win-status-insight-history.png)
 
 ## 技术栈
 
