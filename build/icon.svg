@@ -1,0 +1,18 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="512" height="512" viewBox="0 0 512 512" role="img" aria-label="WinStatusInsight icon">
+  <defs>
+    <linearGradient id="panel" x1="96" y1="80" x2="416" y2="432" gradientUnits="userSpaceOnUse">
+      <stop offset="0" stop-color="#142235"/>
+      <stop offset="1" stop-color="#0b1118"/>
+    </linearGradient>
+    <linearGradient id="pulse" x1="132" y1="292" x2="380" y2="196" gradientUnits="userSpaceOnUse">
+      <stop offset="0" stop-color="#24d6a5"/>
+      <stop offset="0.55" stop-color="#48a9f8"/>
+      <stop offset="1" stop-color="#f2b84b"/>
+    </linearGradient>
+  </defs>
+  <rect width="512" height="512" rx="112" fill="#071018"/>
+  <rect x="62" y="62" width="388" height="388" rx="92" fill="url(#panel)" stroke="#263647" stroke-width="18"/>
+  <path d="M142 338V198M214 338V150M286 338V238M358 338V176" stroke="#607080" stroke-width="28" stroke-linecap="round"/>
+  <path d="M126 282H180L208 226L256 334L300 198L336 282H386" fill="none" stroke="url(#pulse)" stroke-width="30" stroke-linecap="round" stroke-linejoin="round"/>
+  <circle cx="386" cy="282" r="22" fill="#f2b84b"/>
+</svg>
