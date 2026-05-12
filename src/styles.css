@@ -283,7 +283,31 @@ h1 {
 }
 
 .table-panel {
+  position: relative;
   margin-top: 16px;
+}
+
+.table-toolbar {
+  position: absolute;
+  top: 16px;
+  right: 18px;
+  z-index: 2;
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  color: #9eb1c6;
+  font-size: 13px;
+}
+
+.pane-tools {
+  display: flex;
+  justify-content: flex-end;
+  min-height: 28px;
+  margin: -4px 0 4px;
+}
+
+.hint-button {
+  color: #8fb6d8;
 }
 
 .tag {
@@ -313,6 +337,12 @@ h1 {
   gap: 8px;
 }
 
+.project-urls {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px 8px;
+}
+
 .projects-toolbar .el-button,
 .projects-actions .el-button,
 .disk-toolbar .el-button,
@@ -321,6 +351,71 @@ h1 {
   display: inline-flex;
   align-items: center;
   gap: 5px;
+}
+
+.settings-list {
+  display: grid;
+  gap: 12px;
+}
+
+.settings-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 18px;
+  padding: 14px;
+  border: 1px solid rgba(72, 169, 248, 0.2);
+  border-radius: 8px;
+  background: #101b26;
+}
+
+.settings-row div {
+  display: grid;
+  gap: 4px;
+}
+
+.settings-row strong {
+  color: #edf6ff;
+}
+
+.settings-row span {
+  color: #9eb1c6;
+  font-size: 13px;
+  line-height: 1.45;
+}
+
+.el-dialog {
+  --el-dialog-bg-color: #0f1a24;
+  --el-bg-color: #0f1a24;
+  --el-text-color-primary: #edf6ff;
+  overflow: hidden;
+  border: 1px solid rgba(72, 169, 248, 0.42);
+  border-radius: 8px;
+  background:
+    linear-gradient(135deg, rgba(36, 214, 165, 0.08), transparent 38%),
+    #0f1a24;
+  box-shadow: 0 24px 80px rgba(0, 0, 0, 0.48), 0 0 0 1px rgba(36, 214, 165, 0.1) inset;
+}
+
+.el-dialog__header {
+  margin: 0;
+  padding: 18px 18px 8px;
+  background: transparent;
+}
+
+.el-dialog__title {
+  color: #edf6ff;
+  font-weight: 700;
+}
+
+.el-dialog__body {
+  padding: 12px 18px 18px;
+  background: transparent;
+}
+
+.el-overlay {
+  background-color: rgba(3, 8, 12, 0.62);
+  backdrop-filter: blur(3px);
 }
 
 .history-toolbar .el-select {

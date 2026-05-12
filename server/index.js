@@ -188,7 +188,7 @@ function runPowerShellJson(script, fallback = []) {
   return new Promise((resolve, reject) => {
     execFile(
       powershellExe,
-      ['-NoProfile', '-ExecutionPolicy', 'Bypass', '-Command', script],
+      ['-NoProfile', '-ExecutionPolicy', 'Bypass', '-Command', `[Console]::OutputEncoding=[System.Text.Encoding]::UTF8; $OutputEncoding=[System.Text.Encoding]::UTF8; ${script}`],
       { windowsHide: true, maxBuffer: 8 * 1024 * 1024 },
       (error, stdout, stderr) => {
         if (error) {
@@ -382,6 +382,23 @@ async function pathExists(filePath) {
   } catch {
     return false
   }
+}
+
+function openWindowsPath(targetPath) {
+  return new Promise((resolve, reject) => {
+    execFile(
+      powershellExe,
+      ['-NoProfile', '-ExecutionPolicy', 'Bypass', '-Command', `Start-Process -FilePath explorer.exe -ArgumentList @('${String(targetPath).replace(/'/g, "''")}')`],
+      { windowsHide: true, maxBuffer: 1024 * 1024 },
+      (error, _stdout, stderr) => {
+        if (error) {
+          reject(new Error(stderr || error.message))
+          return
+        }
+        resolve()
+      }
+    )
+  })
 }
 
 async function getPathSize(filePath) {
@@ -771,6 +788,15 @@ function projectPathFromArgument(value) {
 
 function inferProjectPathDirect(processInfo) {
   const text = `${processInfo.commandLine || ''}`
+  const executablePath = `${processInfo.executablePath || ''}`
+  const dotnetExecutableMatch = executablePath.match(/([A-Z]:\\[^"]+?)\\bin\\(?:Debug|Release)\\[^\\"]+\\[^\\"]+\.exe/i)
+  if (dotnetExecutableMatch) return normalizeDetectedPath(dotnetExecutableMatch[1])
+
+  const userExecutableMatch = executablePath.match(/([A-Z]:\\(?:Users|HuaweiMoveData)\\[^"]+?)\\[^\\"]+\.exe$/i)
+  if (userExecutableMatch && !normalizePathText(userExecutableMatch[1]).includes('\\appdata\\')) {
+    return normalizeDetectedPath(userExecutableMatch[1])
+  }
+
   const nodeMatch = text.match(/([A-Z]:\\[^"]*?)\\node_modules\\/i)
   if (nodeMatch) return nodeMatch[1]
 
@@ -804,9 +830,16 @@ function inferProjectPathDirect(processInfo) {
 
 function inferProjectPath(processInfo, processesByPid, seen = new Set()) {
   const directPath = inferProjectPathDirect(processInfo)
-  if (directPath) return directPath
-
   const parentPid = Number(processInfo.parentProcessId)
+  if (parentPid && !seen.has(parentPid) && processesByPid?.has(parentPid)) {
+    seen.add(parentPid)
+    const parentPath = inferProjectPath(processesByPid.get(parentPid), processesByPid, seen)
+    if (directPath && parentPath && normalizePathText(directPath).startsWith(`${normalizePathText(parentPath)}\\`)) {
+      return parentPath
+    }
+    if (!directPath && parentPath) return parentPath
+  }
+  if (directPath) return directPath
   if (!parentPid || seen.has(parentPid) || !processesByPid?.has(parentPid)) return ''
   seen.add(parentPid)
   return inferProjectPath(processesByPid.get(parentPid), processesByPid, seen)
@@ -835,11 +868,42 @@ function projectDisplayName(projectPath, fallback) {
   return path.basename(projectPath) || projectPath
 }
 
+function isUserDevCommand(processInfo) {
+  const name = normalizeText(processInfo.name || processInfo.Name).replace(/\.exe$/, '')
+  const commandLine = normalizePathText(processInfo.commandLine || processInfo.CommandLine)
+  const userRoot = normalizePathText(userProfile)
+  const launcherNames = new Set(['powershell', 'pwsh', 'cmd', 'dotnet', 'node', 'npm', 'npx', 'pnpm', 'bun', 'deno', 'python'])
+  const hasUserPath = commandLine.includes(userRoot) || commandLine.includes('\\huaweimovedata\\users\\huawei\\')
+  const hasDevSignal = /vite|next|nuxt|webpack|nodemon|dotnet\s+(watch|run)|--urls|localhost:\d+|server\/index\.js/i.test(commandLine)
+  return launcherNames.has(name) && hasUserPath && hasDevSignal
+}
+
+function localProjectProtectionReason(processInfo, projectPath = '') {
+  const pid = Number(processInfo.pid || processInfo.ProcessId || processInfo.Id)
+  const name = normalizeText(processInfo.name || processInfo.Name).replace(/\.exe$/, '')
+  const commandLine = normalizePathText(processInfo.commandLine || processInfo.CommandLine)
+  const pathText = normalizePathText(processInfo.executablePath || processInfo.path || processInfo.Path)
+  const panelRoot = normalizePathText(rootDir)
+  const projectRoot = normalizePathText(projectPath)
+  const isSystemPath =
+    pathText.startsWith('c:\\windows\\system32') ||
+    pathText.startsWith('c:\\windows\\syswow64') ||
+    pathText.startsWith('c:\\windows\\systemapps')
+  const protectedSystem = PROTECTED_HINTS.some((hint) => `${name} ${pathText}`.includes(hint))
+
+  if (pid === process.pid || commandLine.includes(panelRoot) || pathText.includes(panelRoot) || projectRoot === panelRoot) {
+    return '面板保护'
+  }
+  if ((isSystemPath || SYSTEM_NAMES.has(name) || protectedSystem) && !isUserDevCommand(processInfo)) return '系统保护'
+  return ''
+}
+
 function buildLocalProjects(processes) {
   const groups = new Map()
   const processesByPid = new Map(processes.map((item) => [Number(item.pid), item]))
   for (const processInfo of processes) {
     const projectPath = inferProjectPath(processInfo, processesByPid)
+    const protectedReason = localProjectProtectionReason(processInfo, projectPath)
     const key = projectPath || `${processInfo.name}-${processInfo.parentProcessId || processInfo.pid}`
     const group =
       groups.get(key) || {
@@ -852,16 +916,14 @@ function buildLocalProjects(processes) {
         ports: new Set(),
         memoryBytes: 0,
         protected: false,
+        protectedReason: '',
         processes: []
       }
 
     group.pids.push(Number(processInfo.pid))
     group.memoryBytes += Number(processInfo.workingSet || 0)
-    group.protected =
-      group.protected ||
-      Number(processInfo.pid) === process.pid ||
-      normalizePathText(projectPath) === normalizePathText(rootDir) ||
-      normalizePathText(processInfo.commandLine).includes(normalizePathText(rootDir))
+    group.protected = group.protected || Boolean(protectedReason)
+    if (protectedReason === '面板保护' || (!group.protectedReason && protectedReason)) group.protectedReason = protectedReason
     for (const port of processInfo.ports || []) group.ports.add(Number(port))
     group.processes.push(processInfo)
     groups.set(key, group)
@@ -872,6 +934,7 @@ function buildLocalProjects(processes) {
       ...group,
       kind: inferProjectKind(group.processes),
       ports: [...group.ports].filter(Boolean).sort((a, b) => a - b),
+      urls: [...group.ports].filter(Boolean).sort((a, b) => a - b).map((port) => `http://localhost:${port}`),
       processCount: group.pids.length,
       memoryGb: bytesToGb(group.memoryBytes),
       processes: group.processes
@@ -896,23 +959,31 @@ function buildLocalProjects(processes) {
 async function listLocalProjects() {
   const script = `
 $ErrorActionPreference = "SilentlyContinue"
-$devCommandPattern = "vite|next|nuxt|webpack|nodemon|ts-node|tsx|server/index.js|dotnet\\s+(watch|run)|dotnet-watch|watch\\.dll|--urls|ASPNETCORE_URLS|ASPNETCORE_ENVIRONMENT"
-$processes = Get-CimInstance Win32_Process | Where-Object {
-  $_.ProcessId -ne $PID -and $_.CommandLine -and $_.CommandLine -notmatch "Get-CimInstance Win32_Process" -and (
-    $_.Name -in @("node.exe", "dotnet.exe", "npm.cmd", "npx.cmd", "pnpm.exe", "pnpm.cmd", "bun.exe") -or
-    $_.CommandLine -match $devCommandPattern
-  )
-}
+$devCommandPattern = "vite|next|nuxt|webpack|nodemon|ts-node|tsx|server/index.js|dotnet\\s+(watch|run)|dotnet-watch|watch\\.dll|--urls|ASPNETCORE_URLS|ASPNETCORE_ENVIRONMENT|localhost:\\d+|http://localhost"
+$devProcessNames = @("node.exe", "dotnet.exe", "npm.cmd", "npx.cmd", "pnpm.exe", "pnpm.cmd", "bun.exe", "deno.exe", "python.exe", "pythonw.exe", "java.exe", "php.exe", "ruby.exe")
+$userPathPattern = "\\Users\\HUAWEI\\|\\HuaweiMoveData\\Users\\HUAWEI\\|\\Desktop\\|\\Documents\\|\\source\\repos\\"
 $runtime = @{}
 Get-Process | ForEach-Object { $runtime["$($_.Id)"] = $_ }
 $portMap = @{}
+$devPortPids = @{}
 netstat -ano -p tcp | Select-String "LISTENING" | ForEach-Object {
   $line = $_.Line
   if ($line -match "^\\s*TCP\\s+\\S+:(\\d+)\\s+\\S+\\s+LISTENING\\s+(\\d+)\\s*$") {
     $pidText = $matches[2]
+    $port = [int]$matches[1]
     if (-not $portMap.ContainsKey($pidText)) { $portMap[$pidText] = @() }
-    $portMap[$pidText] += [int]$matches[1]
+    $portMap[$pidText] += $port
+    if ($port -ge 3000 -and $port -le 9999) { $devPortPids[$pidText] = $true }
   }
+}
+$processes = Get-CimInstance Win32_Process | Where-Object {
+  $pidText = "$($_.ProcessId)"
+  $text = "$($_.CommandLine) $($_.ExecutablePath)"
+  $_.ProcessId -ne $PID -and $_.CommandLine -and $_.CommandLine -notmatch "Get-CimInstance Win32_Process" -and (
+    $_.Name -in $devProcessNames -or
+    $_.CommandLine -match $devCommandPattern -or
+    ($devPortPids.ContainsKey($pidText) -and $text -match $userPathPattern)
+  )
 }
 $items = foreach ($p in $processes) {
   $pidText = "$($p.ProcessId)"
@@ -931,6 +1002,136 @@ $items = foreach ($p in $processes) {
 @($items) | ConvertTo-Json -Depth 6 -Compress
 `
   return buildLocalProjects(toArray(await runPowerShellJson(script)))
+}
+
+async function listStartupItems() {
+  const script = `
+$ErrorActionPreference = "SilentlyContinue"
+$backupRoot = "HKCU:\\Software\\WinStatusInsight\\DisabledStartup"
+$disabledFolder = Join-Path $env:APPDATA "WinStatusInsight\\DisabledStartup"
+$items = @()
+function Add-RunItems($Path, $Scope, $Manageable) {
+  if (-not (Test-Path $Path)) { return }
+  $props = Get-ItemProperty -Path $Path
+  $props.PSObject.Properties | Where-Object { $_.Name -notmatch "^PS" } | ForEach-Object {
+    $script:items += [pscustomobject]@{
+      id = [Convert]::ToBase64String([Text.Encoding]::UTF8.GetBytes("$Path|$($_.Name)|enabled"))
+      name = $_.Name
+      command = "$($_.Value)"
+      location = $Path
+      scope = $Scope
+      type = "registry-run"
+      enabled = $true
+      manageable = $Manageable
+      disabledReason = $(if ($Manageable) { "" } else { "系统级启动项暂只读，避免误改全局配置。" })
+    }
+  }
+}
+Add-RunItems "HKCU:\\Software\\Microsoft\\Windows\\CurrentVersion\\Run" "当前用户" $true
+Add-RunItems "HKLM:\\Software\\Microsoft\\Windows\\CurrentVersion\\Run" "所有用户" $false
+Add-RunItems "HKLM:\\Software\\WOW6432Node\\Microsoft\\Windows\\CurrentVersion\\Run" "所有用户" $false
+
+$userStartup = [Environment]::GetFolderPath("Startup")
+if (Test-Path $userStartup) {
+  Get-ChildItem -LiteralPath $userStartup -File | ForEach-Object {
+    $items += [pscustomobject]@{
+      id = [Convert]::ToBase64String([Text.Encoding]::UTF8.GetBytes("startup-folder|$($_.FullName)|enabled"))
+      name = $_.BaseName
+      command = $_.FullName
+      location = $userStartup
+      scope = "当前用户"
+      type = "startup-folder"
+      enabled = $true
+      manageable = $true
+      disabledReason = ""
+    }
+  }
+}
+
+$backupRun = Join-Path $backupRoot "Run"
+if (Test-Path $backupRun) {
+  $props = Get-ItemProperty -Path $backupRun
+  $props.PSObject.Properties | Where-Object { $_.Name -notmatch "^PS" } | ForEach-Object {
+    $items += [pscustomobject]@{
+      id = [Convert]::ToBase64String([Text.Encoding]::UTF8.GetBytes("HKCU:\\Software\\Microsoft\\Windows\\CurrentVersion\\Run|$($_.Name)|disabled"))
+      name = $_.Name
+      command = "$($_.Value)"
+      location = "HKCU:\\Software\\Microsoft\\Windows\\CurrentVersion\\Run"
+      scope = "当前用户"
+      type = "registry-run"
+      enabled = $false
+      manageable = $true
+      disabledReason = ""
+    }
+  }
+}
+
+if (Test-Path $disabledFolder) {
+  Get-ChildItem -LiteralPath $disabledFolder -File | ForEach-Object {
+    $items += [pscustomobject]@{
+      id = [Convert]::ToBase64String([Text.Encoding]::UTF8.GetBytes("startup-folder|$($_.FullName)|disabled"))
+      name = $_.BaseName
+      command = $_.FullName
+      location = $userStartup
+      scope = "当前用户"
+      type = "startup-folder"
+      enabled = $false
+      manageable = $true
+      disabledReason = ""
+    }
+  }
+}
+@($items | Sort-Object @{Expression="enabled";Descending=$true}, name) | ConvertTo-Json -Depth 5 -Compress
+`
+  return toArray(await runPowerShellJson(script))
+}
+
+async function toggleStartupItem({ name, command, type, enabled }) {
+  const safeName = String(name || '').replace(/'/g, "''")
+  const safeCommand = String(command || '').replace(/'/g, "''")
+  const action = enabled ? 'enable' : 'disable'
+  const safeType = String(type || '').replace(/'/g, "''")
+  const script = `
+$ErrorActionPreference = "Stop"
+$name = '${safeName}'
+$command = '${safeCommand}'
+$type = '${safeType}'
+$action = '${action}'
+$runPath = "HKCU:\\Software\\Microsoft\\Windows\\CurrentVersion\\Run"
+$backupRun = "HKCU:\\Software\\WinStatusInsight\\DisabledStartup\\Run"
+$disabledFolder = Join-Path $env:APPDATA "WinStatusInsight\\DisabledStartup"
+$startupFolder = [Environment]::GetFolderPath("Startup")
+if ($type -eq "registry-run") {
+  if ($action -eq "disable") {
+    New-Item -Path $backupRun -Force | Out-Null
+    $value = (Get-ItemProperty -Path $runPath -Name $name -ErrorAction Stop).$name
+    New-ItemProperty -Path $backupRun -Name $name -Value $value -PropertyType String -Force | Out-Null
+    Remove-ItemProperty -Path $runPath -Name $name -ErrorAction Stop
+  } else {
+    $value = (Get-ItemProperty -Path $backupRun -Name $name -ErrorAction Stop).$name
+    New-ItemProperty -Path $runPath -Name $name -Value $value -PropertyType String -Force | Out-Null
+    Remove-ItemProperty -Path $backupRun -Name $name -ErrorAction Stop
+  }
+} elseif ($type -eq "startup-folder") {
+  New-Item -ItemType Directory -Path $disabledFolder -Force | Out-Null
+  if ($action -eq "disable") {
+    $source = $command
+    if (-not (Test-Path -LiteralPath $source)) { throw "启动项文件不存在：$source" }
+    Move-Item -LiteralPath $source -Destination (Join-Path $disabledFolder (Split-Path $source -Leaf)) -Force
+  } else {
+    $source = $command
+    if (-not (Test-Path -LiteralPath $source)) {
+      $source = Join-Path $disabledFolder (Split-Path $command -Leaf)
+    }
+    if (-not (Test-Path -LiteralPath $source)) { throw "已禁用启动项文件不存在：$source" }
+    Move-Item -LiteralPath $source -Destination (Join-Path $startupFolder (Split-Path $source -Leaf)) -Force
+  }
+} else {
+  throw "不支持的启动项类型：$type"
+}
+[pscustomobject]@{ ok = $true; action = $action; name = $name } | ConvertTo-Json -Compress
+`
+  return runPowerShellJson(script)
 }
 
 function groupNameForProcess(process) {
@@ -1170,6 +1371,15 @@ function canTerminateProcess(processInfo) {
 }
 
 function canStopLocalProjectProcess(processInfo) {
+  const protectedReason = localProjectProtectionReason(processInfo)
+  if (protectedReason === '面板保护') {
+    return { allowed: false, reason: '这是当前分析面板相关进程，停止后面板可能失去响应。' }
+  }
+  if (protectedReason === '系统保护') {
+    return { allowed: false, reason: '该项目包含系统保护进程，不能在这里停止。' }
+  }
+  if (isUserDevCommand(processInfo)) return { allowed: true, reason: '' }
+
   const decision = canTerminateProcess(processInfo)
   if (!decision.allowed) return decision
 
@@ -1382,6 +1592,28 @@ app.get('/api/local-projects', async (_req, res) => {
   }
 })
 
+app.get('/api/startup-items', async (_req, res) => {
+  try {
+    res.json(await listStartupItems())
+  } catch (error) {
+    res.status(500).json({ message: error.message })
+  }
+})
+
+app.post('/api/startup-items/toggle', async (req, res) => {
+  const item = req.body?.item || {}
+  const enabled = Boolean(req.body?.enabled)
+  if (!item.manageable) {
+    res.status(400).json({ message: item.disabledReason || '该启动项暂不支持在工具内开关。' })
+    return
+  }
+  try {
+    res.json(await toggleStartupItem({ ...item, enabled }))
+  } catch (error) {
+    res.status(500).json({ message: error.message })
+  }
+})
+
 app.post('/api/local-projects/stop', async (req, res) => {
   const pids = [...new Set(toArray(req.body?.pids).map(Number).filter((pid) => Number.isInteger(pid) && pid > 0))]
   if (!pids.length || pids.length > 40) {
@@ -1439,7 +1671,7 @@ app.post('/api/processes/:pid/terminate', async (req, res) => {
 app.get('/api/open-report-dir', async (_req, res) => {
   try {
     await fs.mkdir(snapshotsDir, { recursive: true })
-    execFile('explorer.exe', [snapshotsDir], { windowsHide: true })
+    await openWindowsPath(snapshotsDir)
     res.json({ ok: true, path: snapshotsDir })
   } catch (error) {
     res.status(500).json({ message: error.message })
@@ -1492,8 +1724,19 @@ app.post('/api/disk-check/open-path', async (req, res) => {
   }
 
   try {
-    execFile('explorer.exe', [targetPath], { windowsHide: true })
-    res.json({ ok: true, path: targetPath })
+    let openPath = targetPath
+    if (!(await pathExists(openPath))) {
+      const parentPath = path.win32.dirname(openPath)
+      if (!(await pathExists(parentPath))) {
+        res.status(404).json({ message: `目录不存在：${targetPath}` })
+        return
+      }
+      openPath = parentPath
+    }
+    const stat = await fs.lstat(openPath)
+    if (stat.isFile()) openPath = path.win32.dirname(openPath)
+    await openWindowsPath(openPath)
+    res.json({ ok: true, path: openPath })
   } catch (error) {
     res.status(500).json({ message: error.message })
   }

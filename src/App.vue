@@ -1,5 +1,5 @@
 <script setup>
-import { computed, onMounted, ref } from 'vue'
+import { computed, onBeforeUnmount, onMounted, ref } from 'vue'
 import { ElMessage, ElMessageBox } from 'element-plus'
 import VChart from 'vue-echarts'
 import { use } from 'echarts/core'
@@ -11,9 +11,11 @@ import {
   Database,
   FolderOpen,
   Gauge,
+  Info,
   LoaderCircle,
   Play,
   RefreshCcw,
+  Settings,
   ShieldAlert,
   Trash2
 } from 'lucide-vue-next'
@@ -39,7 +41,17 @@ const diskLoading = ref(false)
 const diskActionLoading = ref('')
 const diskLogs = ref([])
 const activeTab = ref('cpu')
+const showSystemItems = ref(true)
+const loadingGaugeValue = ref(10)
+const scoreAnimating = ref(false)
+const settingsVisible = ref(false)
+const desktopSettings = ref({ closeToTray: false })
+const desktopSettingsLoading = ref(false)
+const startupItems = ref([])
+const startupLoading = ref(false)
+const togglingStartupId = ref('')
 let autoTimer = null
+let loadingGaugeTimer = null
 
 const formatBytes = (bytes) => {
   const value = Number(bytes || 0)
@@ -76,7 +88,6 @@ const deltaType = (value, reverse = false) => {
 
 const cleanableSuggestions = computed(() => (snapshot.value?.suggestions || []).filter((item) => item.cleanable))
 const topImpactGroups = computed(() => (snapshot.value?.appGroups || []).slice(0, 4))
-const stoppableProjects = computed(() => localProjects.value.filter((project) => !project.protected))
 const compareA = computed(() => compareSnapshots.value[0] || null)
 const compareB = computed(() => compareSnapshots.value[1] || null)
 const diskDrives = computed(() => diskCheck.value?.drives || [])
@@ -84,6 +95,23 @@ const diskLargeItems = computed(() => diskCheck.value?.largeItems || [])
 const diskMigrationItems = computed(() => (diskCheck.value?.items || []).filter((item) => item.type === 'dev-cache'))
 const diskCleanItems = computed(() => (diskCheck.value?.items || []).filter((item) => item.type === 'clean'))
 const diskAppItems = computed(() => (diskCheck.value?.items || []).filter((item) => item.type === 'app-cache'))
+const desktopApi = computed(() => window.winStatusInsight || null)
+
+const isProtectedRow = (row = {}) =>
+  row.cleanupAllowed === false || row.system === true || row.protected === true || row.protectedSystem === true
+
+const sortedRows = (rows = []) => {
+  const visibleRows = showSystemItems.value ? [...rows] : rows.filter((row) => !isProtectedRow(row))
+  return visibleRows.sort((a, b) => Number(isProtectedRow(a)) - Number(isProtectedRow(b)))
+}
+
+const topCpuRows = computed(() => sortedRows(snapshot.value?.topCpu || []))
+const topMemoryRows = computed(() => sortedRows(snapshot.value?.topMemory || []))
+const backgroundRows = computed(() => sortedRows(snapshot.value?.background || []))
+const appGroupRows = computed(() => sortedRows(snapshot.value?.appGroups || []))
+const localProjectRows = computed(() => sortedRows(localProjects.value))
+const stoppableProjects = computed(() => localProjectRows.value.filter((project) => !project.protected))
+const startupRows = computed(() => sortedRows(startupItems.value.map((item) => ({ ...item, protected: !item.manageable }))))
 
 const ensureTwoCompareIds = async () => {
   if (compareIds.value.length < 2 && history.value.length >= 2) {
@@ -112,8 +140,154 @@ const loadCompareSnapshots = async () => {
   compareSnapshots.value = payloads
 }
 
+const applySnapshot = (data) => {
+  snapshot.value = data
+  if (!data?.capturedAt || !data?.system || !data?.analysis) return
+  trend.value = [
+    {
+      time: new Date(data.capturedAt).toLocaleTimeString('zh-CN', { hour12: false }),
+      cpu: data.system.cpuPercent,
+      memory: data.system.memoryPercent,
+      score: data.analysis.score
+    }
+  ]
+}
+
+const restoreLatestSnapshot = async () => {
+  if (snapshot.value || !history.value.length) return
+  try {
+    const latest = history.value[0]
+    const response = await fetch(`/api/history/${encodeURIComponent(latest.id)}`)
+    const data = await response.json()
+    if (!response.ok) throw new Error(data.message || '恢复最近状态失败')
+    applySnapshot(data)
+  } catch (error) {
+    ElMessage.warning(error.message)
+  }
+}
+
+const loadDesktopSettings = async () => {
+  if (!desktopApi.value) return
+  try {
+    desktopSettings.value = await desktopApi.value.getSettings()
+  } catch (error) {
+    ElMessage.error(error.message)
+  }
+}
+
+const loadStartupItems = async () => {
+  startupLoading.value = true
+  try {
+    const response = await fetch('/api/startup-items')
+    const result = await response.json()
+    if (!response.ok) throw new Error(result.message || '读取自启动项失败')
+    startupItems.value = result
+  } catch (error) {
+    ElMessage.error(error.message)
+  } finally {
+    startupLoading.value = false
+  }
+}
+
+const toggleStartupItem = async (row, enabled) => {
+  if (!row.manageable) {
+    row.enabled = !enabled
+    ElMessage.warning(row.disabledReason || '该启动项暂不支持在工具内开关')
+    return
+  }
+  const confirmed = await ElMessageBox.confirm(
+    `确认${enabled ? '开启' : '关闭'}开机自启动吗？\n应用：${row.name}\n位置：${row.location}\n命令：${row.command}`,
+    `${enabled ? '开启' : '关闭'}自启动`,
+    {
+      confirmButtonText: enabled ? '开启' : '关闭',
+      cancelButtonText: '取消',
+      type: enabled ? 'info' : 'warning'
+    }
+  ).then(() => true).catch(() => false)
+  if (!confirmed) {
+    row.enabled = !enabled
+    return
+  }
+
+  togglingStartupId.value = row.id
+  try {
+    const response = await fetch('/api/startup-items/toggle', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ item: row, enabled })
+    })
+    const result = await response.json()
+    if (!response.ok) throw new Error(result.message || '切换自启动失败')
+    ElMessage.success(`${row.name} 已${enabled ? '开启' : '关闭'}开机自启动`)
+    await loadStartupItems()
+  } catch (error) {
+    row.enabled = !enabled
+    ElMessage.error(error.message)
+  } finally {
+    togglingStartupId.value = ''
+  }
+}
+
+const updateCloseToTray = async (value) => {
+  if (!desktopApi.value) {
+    desktopSettings.value.closeToTray = false
+    ElMessage.info('这个设置只在桌面应用中生效')
+    return
+  }
+  desktopSettingsLoading.value = true
+  try {
+    desktopSettings.value = await desktopApi.value.updateSettings({ closeToTray: value })
+    ElMessage.success(value ? '已开启：关闭窗口时最小化到托盘' : '已关闭：关闭窗口时直接退出')
+  } catch (error) {
+    desktopSettings.value.closeToTray = !value
+    ElMessage.error(error.message)
+  } finally {
+    desktopSettingsLoading.value = false
+  }
+}
+
+const startLoadingGauge = () => {
+  if (loadingGaugeTimer) window.clearInterval(loadingGaugeTimer)
+  scoreAnimating.value = true
+  loadingGaugeValue.value = snapshot.value?.analysis?.score ?? 0
+  loadingGaugeTimer = window.setInterval(() => {
+    const nextValue = loadingGaugeValue.value + 17 + Math.round(Math.random() * 11)
+    loadingGaugeValue.value = nextValue % 101
+  }, 42)
+}
+
+const stopLoadingGauge = () => {
+  if (!loadingGaugeTimer) return
+  window.clearInterval(loadingGaugeTimer)
+  loadingGaugeTimer = null
+}
+
+const settleGaugeToScore = (finalScore) =>
+  new Promise((resolve) => {
+    stopLoadingGauge()
+    const target = Number(finalScore || 0)
+    const start = Number(loadingGaugeValue.value || 0)
+    const duration = 760
+    const startedAt = performance.now()
+    const tick = (now) => {
+      const progress = Math.min(1, (now - startedAt) / duration)
+      const eased = 1 - Math.pow(1 - progress, 3)
+      const overshoot = Math.sin(progress * Math.PI * 3) * (1 - progress) * 7
+      loadingGaugeValue.value = Math.max(0, Math.min(100, Number((start + (target - start) * eased + overshoot).toFixed(1))))
+      if (progress < 1) {
+        window.requestAnimationFrame(tick)
+        return
+      }
+      loadingGaugeValue.value = target
+      scoreAnimating.value = false
+      resolve()
+    }
+    window.requestAnimationFrame(tick)
+  })
+
 const readStatus = async () => {
   loading.value = true
+  startLoadingGauge()
   errorMessage.value = ''
   try {
     const response = await fetch('/api/status')
@@ -129,12 +303,16 @@ const readStatus = async () => {
         score: data.analysis.score
       }
     ].slice(-12)
-    await loadHistory()
-    compareIds.value = history.value.slice(0, 2).map((item) => item.id)
-    await loadCompareSnapshots()
+    await settleGaugeToScore(data.analysis.score)
+    loadHistory().then(async () => {
+      compareIds.value = history.value.slice(0, 2).map((item) => item.id)
+      await loadCompareSnapshots()
+    })
   } catch (error) {
     errorMessage.value = error.message
+    scoreAnimating.value = false
   } finally {
+    stopLoadingGauge()
     loading.value = false
   }
 }
@@ -274,7 +452,7 @@ const migrateDiskItem = async (item) => {
   }
 }
 
-const rowClassName = ({ row }) => (row.cleanupAllowed === false ? 'protected-row' : '')
+const rowClassName = ({ row }) => (isProtectedRow(row) ? 'protected-row' : '')
 
 const cleanupItemFromRow = (row) => ({
   pid: row.pid,
@@ -382,7 +560,8 @@ const stopAllLocalProjects = async () => {
 }
 
 const scoreOption = computed(() => {
-  const score = snapshot.value?.analysis?.score ?? 0
+  const score = loading.value || scoreAnimating.value ? loadingGaugeValue.value : snapshot.value?.analysis?.score ?? 0
+  const label = loading.value ? '读取中' : snapshot.value?.analysis?.label || '等待读取'
   return {
     series: [
       {
@@ -393,16 +572,16 @@ const scoreOption = computed(() => {
         progress: {
           show: true,
           width: 16,
-          itemStyle: { color: score >= 85 ? '#24d6a5' : score >= 70 ? '#48a9f8' : score >= 50 ? '#f2b84b' : '#ff6275' }
+          itemStyle: { color: loading.value || scoreAnimating.value ? '#48a9f8' : score >= 85 ? '#24d6a5' : score >= 70 ? '#48a9f8' : score >= 50 ? '#f2b84b' : '#ff6275' }
         },
         axisLine: { lineStyle: { width: 16, color: [[1, '#263647']] } },
         axisTick: { show: false },
         splitLine: { distance: -22, length: 8, lineStyle: { color: '#607080' } },
         axisLabel: { color: '#9eb1c6', distance: 24 },
-        pointer: { width: 5 },
+        pointer: { width: loading.value ? 6 : 5 },
         detail: { valueAnimation: true, formatter: '{value}', color: '#f6fbff', fontSize: 42, offsetCenter: [0, '32%'] },
         title: { color: '#9eb1c6', fontSize: 14, offsetCenter: [0, '58%'] },
-        data: [{ value: score, name: snapshot.value?.analysis?.label || '等待读取' }]
+        data: [{ value: score, name: label }]
       }
     ]
   }
@@ -537,8 +716,17 @@ const compareAnalysis = computed(() => {
 })
 
 onMounted(async () => {
-  await Promise.all([loadHistory(), loadLocalProjects(), loadDiskCheck()])
+  await Promise.all([loadHistory(), loadDesktopSettings()])
+  await restoreLatestSnapshot()
   await ensureTwoCompareIds()
+  loadStartupItems()
+  loadLocalProjects()
+  loadDiskCheck()
+})
+
+onBeforeUnmount(() => {
+  stopLoadingGauge()
+  if (autoTimer) window.clearInterval(autoTimer)
 })
 </script>
 
@@ -563,8 +751,27 @@ onMounted(async () => {
           <FolderOpen :size="17" />
           打开报告目录
         </el-button>
+        <el-button circle title="设置" @click="settingsVisible = true">
+          <Settings :size="17" />
+        </el-button>
       </nav>
     </header>
+
+    <el-dialog v-model="settingsVisible" title="设置" width="420px" align-center>
+      <div class="settings-list">
+        <div class="settings-row">
+          <div>
+            <strong>关闭时最小化到托盘</strong>
+            <span>开启后点击窗口 X 不会退出，可从系统托盘恢复或退出。</span>
+          </div>
+          <el-switch
+            v-model="desktopSettings.closeToTray"
+            :loading="desktopSettingsLoading"
+            @change="updateCloseToTray"
+          />
+        </div>
+      </div>
+    </el-dialog>
 
     <el-alert v-if="errorMessage" class="alert" type="error" :title="errorMessage" show-icon />
 
@@ -653,9 +860,13 @@ onMounted(async () => {
     </section>
 
     <section class="panel table-panel">
+      <div class="table-toolbar">
+        <el-switch v-model="showSystemItems" size="small" />
+        <span>显示系统项</span>
+      </div>
       <el-tabs v-model="activeTab">
         <el-tab-pane label="CPU 高占用" name="cpu">
-          <el-table :data="snapshot?.topCpu || []" height="390" stripe :row-class-name="rowClassName">
+          <el-table :data="topCpuRows" height="390" stripe :row-class-name="rowClassName">
             <el-table-column prop="name" label="进程" min-width="145" sortable />
             <el-table-column prop="pid" label="PID" width="90" sortable />
             <el-table-column prop="cpuPercent" label="CPU %" width="105" sortable />
@@ -688,7 +899,17 @@ onMounted(async () => {
         </el-tab-pane>
 
         <el-tab-pane label="应用聚合" name="groups">
-          <el-table :data="snapshot?.appGroups || []" height="390" stripe>
+          <div class="pane-tools">
+            <el-tooltip
+              placement="left"
+              content="把同一个应用的多个进程合并统计，例如 Edge、Chrome、Node/Vite、Codex，用来看整体 CPU、内存和风险。"
+            >
+              <el-button class="hint-button" circle text>
+                <Info :size="16" />
+              </el-button>
+            </el-tooltip>
+          </div>
+          <el-table :data="appGroupRows" height="360" stripe :row-class-name="rowClassName">
             <el-table-column prop="name" label="应用/组件" min-width="150" sortable />
             <el-table-column prop="count" label="进程数" width="95" sortable />
             <el-table-column prop="cpuPercent" label="CPU %" width="105" sortable />
@@ -708,7 +929,7 @@ onMounted(async () => {
         </el-tab-pane>
 
         <el-tab-pane label="内存高占用" name="memory">
-          <el-table :data="snapshot?.topMemory || []" height="390" stripe :row-class-name="rowClassName">
+          <el-table :data="topMemoryRows" height="390" stripe :row-class-name="rowClassName">
             <el-table-column prop="name" label="进程" min-width="145" sortable />
             <el-table-column prop="pid" label="PID" width="90" sortable />
             <el-table-column label="内存" width="115" sortable>
@@ -736,39 +957,44 @@ onMounted(async () => {
           </el-table>
         </el-tab-pane>
 
-        <el-tab-pane label="后台自启/服务" name="background">
-          <el-table :data="snapshot?.background || []" height="390" stripe :row-class-name="rowClassName">
-            <el-table-column prop="name" label="进程" min-width="145" sortable />
-            <el-table-column prop="sourceType" label="来源" width="105" />
-            <el-table-column prop="source" label="命中项" min-width="170" show-overflow-tooltip />
-            <el-table-column prop="cpuPercent" label="CPU %" width="105" sortable />
-            <el-table-column label="内存" width="115" sortable>
-              <template #default="{ row }">{{ row.workingSetGb }} GB</template>
-            </el-table-column>
-            <el-table-column label="标签" min-width="200">
+        <el-tab-pane label="自启动管理" name="background">
+          <div class="projects-toolbar">
+            <span>开机自启动应用 {{ startupRows.length }} 个</span>
+            <el-button size="small" :loading="startupLoading" @click="loadStartupItems">
+              <RefreshCcw :size="14" />
+              刷新
+            </el-button>
+          </div>
+          <el-table :data="startupRows" height="390" stripe :row-class-name="rowClassName">
+            <el-table-column prop="name" label="应用" min-width="170" sortable />
+            <el-table-column label="开机自启动" width="140">
               <template #default="{ row }">
-                <el-tag v-for="tag in row.tags" :key="tag" class="tag" effect="plain">{{ tag }}</el-tag>
+                <el-switch
+                  v-model="row.enabled"
+                  :disabled="!row.manageable"
+                  :loading="togglingStartupId === row.id"
+                  @change="(value) => toggleStartupItem(row, value)"
+                />
               </template>
             </el-table-column>
-            <el-table-column label="控制" width="105" fixed="right">
+            <el-table-column prop="scope" label="范围" width="105" />
+            <el-table-column prop="type" label="类型" width="125">
+              <template #default="{ row }">{{ row.type === 'registry-run' ? '注册表' : '启动文件夹' }}</template>
+            </el-table-column>
+            <el-table-column label="状态" width="125">
               <template #default="{ row }">
-                <el-button
-                  v-if="row.cleanupAllowed"
-                  size="small"
-                  type="danger"
-                  :loading="cleaningPid === row.pid"
-                  @click="cleanupProcess(cleanupItemFromRow(row))"
-                >
-                  清理
-                </el-button>
+                <el-tag :type="row.enabled ? 'success' : 'info'">{{ row.enabled ? '已开启' : '已关闭' }}</el-tag>
               </template>
             </el-table-column>
+            <el-table-column prop="location" label="位置" min-width="260" show-overflow-tooltip />
+            <el-table-column prop="command" label="命令/文件" min-width="320" show-overflow-tooltip />
+            <el-table-column prop="disabledReason" label="说明" min-width="220" show-overflow-tooltip />
           </el-table>
         </el-tab-pane>
 
         <el-tab-pane label="本地项目" name="projects">
           <div class="projects-toolbar">
-            <span>正在运行的开发项目 {{ localProjects.length }} 个</span>
+            <span>正在运行的开发项目 {{ localProjectRows.length }} 个</span>
             <div class="projects-actions">
               <el-button size="small" :loading="localProjectsLoading" @click="loadLocalProjects">
                 <RefreshCcw :size="14" />
@@ -786,19 +1012,26 @@ onMounted(async () => {
               </el-button>
             </div>
           </div>
-          <el-table :data="localProjects" height="390" stripe>
+          <el-table :data="localProjectRows" height="390" stripe :row-class-name="rowClassName">
             <el-table-column prop="name" label="项目" min-width="150" sortable />
             <el-table-column prop="kind" label="类型" width="110" />
-            <el-table-column label="端口" width="130">
-              <template #default="{ row }">{{ row.ports.length ? row.ports.join(', ') : '-' }}</template>
+            <el-table-column label="访问地址" min-width="180">
+              <template #default="{ row }">
+                <div v-if="row.urls?.length" class="project-urls">
+                  <el-link v-for="url in row.urls" :key="url" :href="url" target="_blank" type="primary">
+                    {{ url.replace('http://', '') }}
+                  </el-link>
+                </div>
+                <span v-else>-</span>
+              </template>
             </el-table-column>
             <el-table-column prop="processCount" label="进程数" width="95" sortable />
             <el-table-column label="内存" width="115" sortable>
               <template #default="{ row }">{{ row.memoryGb }} GB</template>
             </el-table-column>
-            <el-table-column label="状态" width="110">
+            <el-table-column label="状态" width="125">
               <template #default="{ row }">
-                <el-tag :type="row.protected ? 'info' : 'warning'">{{ row.protected ? '面板保护' : '可停止' }}</el-tag>
+                <el-tag :type="row.protected ? 'info' : 'warning'">{{ row.protectedReason || (row.protected ? '受保护' : '可停止') }}</el-tag>
               </template>
             </el-table-column>
             <el-table-column prop="projectPath" label="路径" min-width="280" show-overflow-tooltip />

@@ -1,16 +1,74 @@
-import { app, BrowserWindow, shell } from 'electron'
+import { app, BrowserWindow, Menu, Tray, ipcMain, shell } from 'electron'
 import path from 'node:path'
-import { existsSync } from 'node:fs'
+import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs'
 
 let mainWindow = null
 let loadingWindow = null
 let serverModule = null
+let tray = null
+let isQuitting = false
+let appSettings = { closeToTray: false }
+
+function settingsPath() {
+  return path.join(app.getPath('userData'), 'settings.json')
+}
+
+function loadSettings() {
+  try {
+    if (!existsSync(settingsPath())) return appSettings
+    appSettings = { ...appSettings, ...JSON.parse(readFileSync(settingsPath(), 'utf8')) }
+  } catch {
+    appSettings = { closeToTray: false }
+  }
+  return appSettings
+}
+
+function saveSettings(nextSettings) {
+  appSettings = { ...appSettings, ...nextSettings }
+  mkdirSync(app.getPath('userData'), { recursive: true })
+  writeFileSync(settingsPath(), JSON.stringify(appSettings, null, 2), 'utf8')
+  return appSettings
+}
 
 function resolveIconPath() {
   const iconPath = app.isPackaged
     ? path.join(process.resourcesPath, 'build', 'icon-256.png')
     : path.join(app.getAppPath(), 'build', 'icon-256.png')
   return existsSync(iconPath) ? iconPath : undefined
+}
+
+function showMainWindow() {
+  if (!mainWindow) return
+  if (mainWindow.isMinimized()) mainWindow.restore()
+  mainWindow.show()
+  mainWindow.focus()
+}
+
+function ensureTray() {
+  if (tray) return tray
+  const icon = resolveIconPath()
+  tray = new Tray(icon || path.join(app.getAppPath(), 'build', 'icon-256.png'))
+  tray.setToolTip('WinStatusInsight')
+  tray.setContextMenu(
+    Menu.buildFromTemplate([
+      { label: '显示窗口', click: showMainWindow },
+      {
+        label: '退出',
+        click: () => {
+          isQuitting = true
+          app.quit()
+        }
+      }
+    ])
+  )
+  tray.on('double-click', showMainWindow)
+  return tray
+}
+
+function removeTrayIfDisabled() {
+  if (appSettings.closeToTray || !tray) return
+  tray.destroy()
+  tray = null
 }
 
 async function waitForServer(url, timeoutMs = 12000) {
@@ -153,7 +211,8 @@ function createLoadingWindow() {
     ...(icon ? { icon } : {}),
     webPreferences: {
       contextIsolation: true,
-      nodeIntegration: false
+      nodeIntegration: false,
+      preload: path.join(app.getAppPath(), 'electron', 'preload.js')
     }
   })
   loadingWindow.loadURL(loadingHtml())
@@ -189,6 +248,14 @@ async function createWindow() {
     if (loadingWindow) loadingWindow.close()
   })
 
+  mainWindow.on('close', (event) => {
+    if (!isQuitting && appSettings.closeToTray) {
+      event.preventDefault()
+      ensureTray()
+      mainWindow.hide()
+    }
+  })
+
   mainWindow.on('closed', () => {
     mainWindow = null
   })
@@ -203,6 +270,14 @@ async function createWindow() {
 
 app.setAppUserModelId('cn.zgxhh.winstatusinsight')
 
+ipcMain.handle('settings:get', () => appSettings)
+ipcMain.handle('settings:update', (event, nextSettings = {}) => {
+  const saved = saveSettings({ closeToTray: Boolean(nextSettings.closeToTray) })
+  if (saved.closeToTray) ensureTray()
+  else removeTrayIfDisabled()
+  return saved
+})
+
 const gotSingleInstanceLock = app.requestSingleInstanceLock()
 
 if (!gotSingleInstanceLock) {
@@ -212,15 +287,20 @@ if (!gotSingleInstanceLock) {
     const targetWindow = mainWindow || loadingWindow
     if (!targetWindow) return
     if (targetWindow.isMinimized()) targetWindow.restore()
+    targetWindow.show()
     targetWindow.focus()
   })
 
-  app.whenReady().then(createWindow)
+  app.whenReady().then(() => {
+    loadSettings()
+    if (appSettings.closeToTray) ensureTray()
+    return createWindow()
+  })
 }
 
 app.on('window-all-closed', () => {
   if (serverModule?.server) serverModule.server.close()
-  if (process.platform !== 'darwin') app.quit()
+  if (process.platform !== 'darwin' && !appSettings.closeToTray) app.quit()
 })
 
 app.on('activate', () => {
