@@ -114,18 +114,19 @@ const DISK_CLEAN_ITEMS = [
   },
   {
     id: 'electron-temp',
-    label: 'Electron 便携版解压残留',
+    label: 'Electron 解压残留',
     path: path.win32.join(userProfile, 'AppData\\Local\\Temp'),
     type: 'clean',
     risk: '低风险：只清理 3DZ*、ns*.tmp 等超过 24 小时的残留目录',
-    action: '清理旧的便携版解压残留'
+    action: '清理旧的 Electron 解压残留'
   },
   {
     id: 'recycle-bin',
     label: '回收站',
     path: 'C:\\$RECYCLE.BIN',
+    openPath: 'shell:RecycleBinFolder',
     type: 'clean',
-    risk: '需单独确认：清空后普通撤销不可用',
+    risk: '高影响：清空后普通撤销不可用',
     action: '清空 C 盘回收站'
   }
 ]
@@ -370,9 +371,13 @@ $largeItems = $items | Sort-Object -Property sizeBytes -Descending | Select-Obje
   drives = @($drives)
   items = @($items)
   largeItems = @($largeItems)
-  summary = "只读扫描完成；清理/迁移操作均需要前端二次确认。"
+  summary = "只读扫描完成；仅低风险项目提供操作入口。"
 } | ConvertTo-Json -Depth 8 -Compress
 `
+}
+
+function isRecycleBinShellPath(value) {
+  return String(value || '').toLowerCase() === 'shell:recyclebinfolder'
 }
 
 async function pathExists(filePath) {
@@ -602,7 +607,7 @@ async function scanDiskCheck() {
     drives,
     items,
     largeItems,
-    summary: '只读扫描完成；清理/迁移操作均需要前端二次确认。'
+    summary: '只读扫描完成；仅低风险项目提供操作入口。'
   }
 }
 
@@ -1838,6 +1843,16 @@ app.post('/api/disk-check/migrate', async (req, res) => {
 
 app.post('/api/disk-check/open-path', async (req, res) => {
   const targetPath = String(req.body?.path || '')
+  if (isRecycleBinShellPath(targetPath)) {
+    try {
+      await openWindowsPath(targetPath)
+      res.json({ ok: true, path: targetPath, displayPath: '回收站' })
+    } catch (error) {
+      res.status(500).json({ message: error.message })
+    }
+    return
+  }
+
   if (!isAllowedDiskPath(targetPath)) {
     res.status(400).json({ message: '该路径不在磁盘检查允许打开的范围内。' })
     return

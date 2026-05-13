@@ -11,8 +11,6 @@ import {
   Database,
   FolderOpen,
   Gauge,
-  LoaderCircle,
-  Play,
   RefreshCcw,
   Settings,
   ShieldAlert,
@@ -22,7 +20,6 @@ import {
 use([CanvasRenderer, GaugeChart, LineChart, PieChart, GridComponent, LegendComponent, TooltipComponent])
 
 const loading = ref(false)
-const autoRunning = ref(false)
 const snapshot = ref(null)
 const history = ref([])
 const oldLogs = ref([])
@@ -38,6 +35,7 @@ const stoppingAllProjects = ref(false)
 const diskCheck = ref(null)
 const diskLoading = ref(false)
 const diskActionLoading = ref('')
+const diskPathOpening = ref(false)
 const diskLogs = ref([])
 const activeTab = ref('resources')
 const showSystemItems = ref(true)
@@ -53,8 +51,9 @@ const resourceSort = ref('impact')
 const startupItems = ref([])
 const startupLoading = ref(false)
 const togglingStartupId = ref('')
-let autoTimer = null
 let loadingGaugeFrame = null
+
+const wait = (ms) => new Promise((resolve) => window.setTimeout(resolve, ms))
 
 const formatBytes = (bytes) => {
   const value = Number(bytes || 0)
@@ -156,6 +155,7 @@ const loadCompareSnapshots = async () => {
 
 const applySnapshot = (data) => {
   snapshot.value = data
+  if (data?.analysis?.score !== undefined) loadingGaugeValue.value = Number(data.analysis.score || 0)
   if (!data?.capturedAt || !data?.system || !data?.analysis) return
   trend.value = [
     {
@@ -296,14 +296,22 @@ const downloadAndInstallUpdate = async () => {
 const startLoadingGauge = () => {
   stopLoadingGauge()
   scoreAnimating.value = true
-  const base = Math.max(18, Math.min(78, Number(snapshot.value?.analysis?.score ?? 42)))
+  const startValue = Math.max(18, Math.min(82, Number(snapshot.value?.analysis?.score ?? loadingGaugeValue.value ?? 52)))
   const startedAt = performance.now()
+  let displayed = startValue
+  const easeOutCubic = (value) => 1 - Math.pow(1 - value, 3)
+  const easeInOut = (value) => (value < 0.5 ? 2 * value * value : 1 - Math.pow(-2 * value + 2, 2) / 2)
+  const throttleSweep = (phase) => {
+    if (phase < 0.46) return 34 + easeOutCubic(phase / 0.46) * 58
+    if (phase < 0.74) return 92 - easeInOut((phase - 0.46) / 0.28) * 36
+    return 56 + easeOutCubic((phase - 0.74) / 0.26) * 30
+  }
   const tick = (now) => {
     const elapsed = now - startedAt
-    const surge = Math.sin(elapsed / 115) * 32
-    const pulse = Math.sin(elapsed / 270 + 0.8) * 16
-    const kick = Math.max(0, Math.sin(elapsed / 680)) * 18
-    loadingGaugeValue.value = Math.max(8, Math.min(98, Number((base + surge + pulse + kick).toFixed(1))))
+    const phase = (elapsed % 1550) / 1550
+    const target = throttleSweep(phase) + Math.sin(elapsed / 260) * 2.4
+    displayed += (target - displayed) * 0.18
+    loadingGaugeValue.value = Math.max(20, Math.min(96, Number(displayed.toFixed(1))))
     loadingGaugeFrame = window.requestAnimationFrame(tick)
   }
   loadingGaugeFrame = window.requestAnimationFrame(tick)
@@ -320,13 +328,14 @@ const settleGaugeToScore = (finalScore) =>
     stopLoadingGauge()
     const target = Number(finalScore || 0)
     const start = Number(loadingGaugeValue.value || 0)
-    const duration = 760
+    const duration = 980
     const startedAt = performance.now()
     const tick = (now) => {
       const progress = Math.min(1, (now - startedAt) / duration)
-      const eased = 1 - Math.pow(1 - progress, 3)
-      const overshoot = Math.sin(progress * Math.PI * 3) * (1 - progress) * 7
-      loadingGaugeValue.value = Math.max(0, Math.min(100, Number((start + (target - start) * eased + overshoot).toFixed(1))))
+      const eased = progress < 0.5
+        ? 4 * progress * progress * progress
+        : 1 - Math.pow(-2 * progress + 2, 3) / 2
+      loadingGaugeValue.value = Math.max(0, Math.min(100, Number((start + (target - start) * eased).toFixed(1))))
       if (progress < 1) {
         window.requestAnimationFrame(tick)
         return
@@ -339,6 +348,7 @@ const settleGaugeToScore = (finalScore) =>
   })
 
 const readStatus = async () => {
+  const startedAt = performance.now()
   loading.value = true
   startLoadingGauge()
   errorMessage.value = ''
@@ -346,6 +356,8 @@ const readStatus = async () => {
     const response = await fetch('/api/status')
     const data = await response.json()
     if (!response.ok) throw new Error(data.message || '读取状态失败')
+    await wait(Math.max(0, 900 - (performance.now() - startedAt)))
+    await settleGaugeToScore(data.analysis.score)
     snapshot.value = data
     trend.value = [
       ...trend.value,
@@ -356,27 +368,17 @@ const readStatus = async () => {
         score: data.analysis.score
       }
     ].slice(-12)
-    await settleGaugeToScore(data.analysis.score)
     loadHistory().then(async () => {
       compareIds.value = history.value.slice(0, 2).map((item) => item.id)
       await loadCompareSnapshots()
     })
   } catch (error) {
     errorMessage.value = error.message
+    if (snapshot.value?.analysis?.score !== undefined) loadingGaugeValue.value = Number(snapshot.value.analysis.score || 0)
     scoreAnimating.value = false
   } finally {
     stopLoadingGauge()
     loading.value = false
-  }
-}
-
-const toggleAuto = () => {
-  autoRunning.value = !autoRunning.value
-  if (autoRunning.value) {
-    readStatus()
-    autoTimer = window.setInterval(readStatus, 10000)
-  } else {
-    window.clearInterval(autoTimer)
   }
 }
 
@@ -426,6 +428,8 @@ const loadDiskCheck = async () => {
 }
 
 const openDiskPath = async (targetPath) => {
+  if (diskPathOpening.value) return
+  diskPathOpening.value = true
   try {
     const response = await fetch('/api/disk-check/open-path', {
       method: 'POST',
@@ -434,9 +438,13 @@ const openDiskPath = async (targetPath) => {
     })
     const result = await response.json()
     if (!response.ok) throw new Error(result.message || '打开目录失败')
-    ElMessage.success(`已打开：${result.path}`)
+    ElMessage.success(`已打开：${result.displayPath || result.path}`)
   } catch (error) {
     ElMessage.error(error.message)
+  } finally {
+    window.setTimeout(() => {
+      diskPathOpening.value = false
+    }, 900)
   }
 }
 
@@ -562,8 +570,9 @@ const stopAllLocalProjects = async () => {
 }
 
 const scoreOption = computed(() => {
-  const score = loading.value || scoreAnimating.value ? loadingGaugeValue.value : snapshot.value?.analysis?.score ?? 0
+  const score = loadingGaugeValue.value
   const label = loading.value ? '读取中' : snapshot.value?.analysis?.label || '等待读取'
+  const energyColor = score >= 85 ? '#24d6a5' : score >= 70 ? '#48d6c4' : score >= 50 ? '#f2b84b' : '#ff6275'
   return {
     series: [
       {
@@ -571,19 +580,30 @@ const scoreOption = computed(() => {
         min: 0,
         max: 100,
         radius: '92%',
-        animationDurationUpdate: loading.value ? 0 : 90,
-        animationEasingUpdate: loading.value ? 'linear' : 'cubicOut',
+        animation: false,
+        animationDurationUpdate: 0,
+        animationEasingUpdate: 'linear',
         progress: {
           show: true,
           width: 16,
-          itemStyle: { color: loading.value || scoreAnimating.value ? '#48a9f8' : score >= 85 ? '#24d6a5' : score >= 70 ? '#48a9f8' : score >= 50 ? '#f2b84b' : '#ff6275' }
+          roundCap: true,
+          itemStyle: {
+            color: loading.value || scoreAnimating.value
+              ? '#24d6a5'
+              : energyColor,
+            shadowBlur: loading.value ? 14 : 6,
+            shadowColor: loading.value ? 'rgba(36, 214, 165, 0.5)' : 'rgba(36, 214, 165, 0.24)'
+          }
         },
         axisLine: { lineStyle: { width: 16, color: [[1, '#263647']] } },
         axisTick: { show: false },
         splitLine: { distance: -22, length: 8, lineStyle: { color: '#607080' } },
         axisLabel: { color: '#9eb1c6', distance: 24 },
-        pointer: { width: loading.value ? 6 : 5 },
-        detail: { valueAnimation: !loading.value && !scoreAnimating.value, formatter: '{value}', color: '#f6fbff', fontSize: 42, offsetCenter: [0, '32%'] },
+        pointer: {
+          width: loading.value ? 6 : 5,
+          itemStyle: { color: loading.value ? '#6da4ff' : '#5c7df0' }
+        },
+        detail: { valueAnimation: false, formatter: '{value}', color: '#f6fbff', fontSize: 42, offsetCenter: [0, '32%'] },
         title: { color: '#9eb1c6', fontSize: 14, offsetCenter: [0, '58%'] },
         data: [{ value: score, name: label }]
       }
@@ -734,7 +754,6 @@ onMounted(async () => {
 
 onBeforeUnmount(() => {
   stopLoadingGauge()
-  if (autoTimer) window.clearInterval(autoTimer)
 })
 </script>
 
@@ -745,21 +764,16 @@ onBeforeUnmount(() => {
         <div class="eyebrow">LOCAL SYSTEM OBSERVER</div>
         <h1>WinStatusInsight</h1>
       </section>
-      <nav class="actions">
-        <el-button type="primary" :loading="loading" @click="readStatus">
+      <nav class="actions command-bar">
+        <el-button class="command-button command-primary" :loading="loading" @click="readStatus">
           <Activity :size="17" />
           读取状态
         </el-button>
-        <el-button :type="autoRunning ? 'warning' : 'info'" @click="toggleAuto">
-          <LoaderCircle v-if="autoRunning" class="spin" :size="17" />
-          <Play v-else :size="17" />
-          连续采样
-        </el-button>
-        <el-button @click="openReportDir">
+        <el-button class="command-button" @click="openReportDir">
           <FolderOpen :size="17" />
           打开报告目录
         </el-button>
-        <el-button circle title="设置" @click="settingsVisible = true">
+        <el-button class="command-button command-icon" circle title="设置" @click="settingsVisible = true">
           <Settings :size="17" />
         </el-button>
       </nav>
@@ -799,11 +813,11 @@ onBeforeUnmount(() => {
             <span v-else>手动联网检查 GitHub Release，发现新版后可静默下载安装。</span>
           </div>
           <div class="settings-actions">
-            <el-button size="small" :loading="updateChecking" @click="checkForUpdates">检查</el-button>
+            <el-button class="settings-button" size="small" :loading="updateChecking" @click="checkForUpdates">检查</el-button>
             <el-button
               v-if="updateInfo?.hasUpdate"
+              class="settings-button primary"
               size="small"
-              type="primary"
               :loading="updateInstalling"
               @click="downloadAndInstallUpdate"
             >
@@ -908,15 +922,21 @@ onBeforeUnmount(() => {
       <el-tabs v-model="activeTab">
         <el-tab-pane label="资源占用" name="resources">
           <div class="resource-toolbar">
-            <div>
+            <div class="resource-toolbar-copy">
               <strong>应用整体与进程明细</strong>
               <span>先看哪个应用整体占用高，展开后再处理具体 PID。</span>
             </div>
-            <el-radio-group v-model="resourceSort" size="small">
-              <el-radio-button label="impact">综合影响</el-radio-button>
-              <el-radio-button label="cpu">CPU 优先</el-radio-button>
-              <el-radio-button label="memory">内存优先</el-radio-button>
-            </el-radio-group>
+            <el-select
+              v-model="resourceSort"
+              class="resource-sort-select"
+              popper-class="resource-sort-popper"
+              size="small"
+              aria-label="资源排序"
+            >
+              <el-option label="综合影响" value="impact" />
+              <el-option label="CPU 优先" value="cpu" />
+              <el-option label="内存优先" value="memory" />
+            </el-select>
           </div>
           <el-table :data="appGroupRows" height="390" stripe row-key="name" :row-class-name="rowClassName">
             <el-table-column type="expand" width="44">
@@ -1080,7 +1100,7 @@ onBeforeUnmount(() => {
               <strong>低风险清理与开发缓存迁移</strong>
               <span>{{ diskCheck?.summary || '扫描 C/D 盘容量、缓存项与 Junction 状态' }}</span>
             </div>
-            <el-button size="small" :loading="diskLoading" @click="loadDiskCheck">
+            <el-button class="disk-ghost-button" size="small" :loading="diskLoading" @click="loadDiskCheck">
               <RefreshCcw :size="14" />
               刷新
             </el-button>
@@ -1107,7 +1127,13 @@ onBeforeUnmount(() => {
                 <strong>{{ formatBytes(diskCheck?.movedRoot?.sizeBytes) }}</strong>
                 <small>{{ diskCheck?.movedRoot?.path || 'D:\\MovedFromC' }}</small>
               </div>
-              <el-button size="small" @click="openDiskPath(diskCheck?.movedRoot?.path || 'D:\\MovedFromC')">
+              <el-button
+                class="disk-ghost-button"
+                size="small"
+                :loading="diskPathOpening"
+                :disabled="diskPathOpening"
+                @click="openDiskPath(diskCheck?.movedRoot?.path || 'D:\\MovedFromC')"
+              >
                 <FolderOpen :size="14" />
                 打开
               </el-button>
@@ -1133,7 +1159,13 @@ onBeforeUnmount(() => {
                 <el-table-column prop="target" label="目标" min-width="260" show-overflow-tooltip />
                 <el-table-column label="操作" width="160" fixed="right">
                   <template #default="{ row }">
-                    <el-button size="small" @click="openDiskPath(row.isJunction ? row.target : row.path)">
+                    <el-button
+                      class="disk-icon-button"
+                      size="small"
+                      :loading="diskPathOpening"
+                      :disabled="diskPathOpening"
+                      @click="openDiskPath(row.isJunction ? row.target : row.path)"
+                    >
                       <FolderOpen :size="14" />
                     </el-button>
                     <el-button
@@ -1165,7 +1197,13 @@ onBeforeUnmount(() => {
                 <el-table-column prop="risk" label="风险说明" min-width="300" show-overflow-tooltip />
                 <el-table-column label="操作" width="160" fixed="right">
                   <template #default="{ row }">
-                    <el-button size="small" @click="openDiskPath(row.path)">
+                    <el-button
+                      class="disk-icon-button"
+                      size="small"
+                      :loading="diskPathOpening"
+                      :disabled="diskPathOpening"
+                      @click="openDiskPath(row.openPath || row.path)"
+                    >
                       <FolderOpen :size="14" />
                     </el-button>
                     <el-button
@@ -1199,7 +1237,13 @@ onBeforeUnmount(() => {
                 <el-table-column prop="action" label="建议" min-width="320" show-overflow-tooltip />
                 <el-table-column label="操作" width="90" fixed="right">
                   <template #default="{ row }">
-                    <el-button size="small" @click="openDiskPath(row.path)">
+                    <el-button
+                      class="disk-icon-button"
+                      size="small"
+                      :loading="diskPathOpening"
+                      :disabled="diskPathOpening"
+                      @click="openDiskPath(row.path)"
+                    >
                       <FolderOpen :size="14" />
                     </el-button>
                   </template>

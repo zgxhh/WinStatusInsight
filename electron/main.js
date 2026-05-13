@@ -298,7 +298,7 @@ function loadingHtml() {
   <section class="card">
     <div class="eyebrow">LOCAL SYSTEM OBSERVER</div>
     <h1>WinStatusInsight</h1>
-    <p>正在启动本地分析服务，请稍等。便携版首次运行需要解压，期间不要连续双击。</p>
+    <p>正在启动本地分析服务，请稍等。首次运行会初始化桌面环境，期间不要连续点击。</p>
     <div class="bar"></div>
     <div class="hint">正在准备 Electron 窗口、Express 服务和 PowerShell 采集脚本...</div>
   </section>

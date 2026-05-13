@@ -52,14 +52,63 @@ h1 {
   display: flex;
   flex-wrap: wrap;
   justify-content: flex-end;
-  gap: 10px;
+  gap: 8px;
 }
 
 .actions .el-button {
   display: inline-flex;
   align-items: center;
   gap: 7px;
-  height: 38px;
+  height: 40px;
+}
+
+.command-bar {
+  padding: 5px;
+  border: 1px solid rgba(72, 169, 248, 0.22);
+  border-radius: 10px;
+  background:
+    linear-gradient(180deg, rgba(18, 34, 47, 0.9), rgba(8, 15, 22, 0.78)),
+    rgba(7, 13, 20, 0.72);
+  box-shadow: 0 10px 26px rgba(0, 0, 0, 0.18), 0 0 0 1px rgba(36, 214, 165, 0.05) inset;
+}
+
+.command-bar .el-button + .el-button {
+  margin-left: 0;
+}
+
+.command-button.el-button {
+  min-width: 112px;
+  border: 1px solid rgba(126, 158, 190, 0.2);
+  border-radius: 8px;
+  color: #c8d9e8;
+  background: rgba(16, 27, 38, 0.82);
+  box-shadow: none;
+}
+
+.command-button.el-button:hover,
+.command-button.el-button:focus {
+  border-color: rgba(72, 169, 248, 0.58);
+  color: #f4fbff;
+  background: rgba(26, 50, 70, 0.94);
+}
+
+.command-button.command-primary.el-button {
+  color: #f8fcff;
+  border-color: rgba(72, 169, 248, 0.72);
+  background: linear-gradient(180deg, #279eff, #1478d8);
+}
+
+.command-button.active.el-button {
+  color: #07121a;
+  border-color: rgba(242, 184, 75, 0.9);
+  background: linear-gradient(180deg, #ffd06f, #f2a63a);
+}
+
+.command-button.command-icon.el-button {
+  min-width: 40px;
+  width: 40px;
+  padding: 0;
+  border-radius: 50%;
 }
 
 .alert {
@@ -315,13 +364,61 @@ h1 {
   color: #9eb1c6;
 }
 
-.resource-toolbar div {
+.resource-toolbar-copy {
   display: grid;
+  min-width: 0;
   gap: 3px;
 }
 
 .resource-toolbar strong {
   color: #edf6ff;
+}
+
+.resource-sort-select {
+  width: 138px;
+  flex: 0 0 auto;
+}
+
+.resource-sort-select.el-select {
+  display: block;
+}
+
+.resource-sort-select .el-select__wrapper {
+  min-height: 34px;
+  border: 1px solid rgba(72, 169, 248, 0.32);
+  border-radius: 8px;
+  background:
+    linear-gradient(180deg, rgba(20, 42, 58, 0.96), rgba(10, 20, 30, 0.94));
+  box-shadow: 0 0 0 1px rgba(36, 214, 165, 0.06) inset;
+}
+
+.resource-sort-select .el-select__placeholder,
+.resource-sort-select .el-select__selected-item {
+  color: #d9e7f5;
+}
+
+.resource-sort-popper.el-popper {
+  border-color: rgba(72, 169, 248, 0.34);
+  background: #0f1a24;
+}
+
+.resource-sort-popper .el-select-dropdown {
+  background: #0f1a24;
+}
+
+.resource-sort-popper .el-select-dropdown__item {
+  color: #b8c8d8;
+}
+
+.resource-sort-popper .el-select-dropdown__item.is-hovering,
+.resource-sort-popper .el-select-dropdown__item:hover {
+  color: #edf6ff;
+  background: rgba(72, 169, 248, 0.16);
+}
+
+.resource-sort-popper .el-select-dropdown__item.is-selected {
+  color: #24d6a5;
+  font-weight: 700;
 }
 
 .process-detail {
@@ -404,6 +501,30 @@ h1 {
   gap: 5px;
 }
 
+.disk-ghost-button.el-button,
+.disk-icon-button.el-button {
+  border: 1px solid rgba(72, 169, 248, 0.34);
+  color: #cfe0ef;
+  background:
+    linear-gradient(180deg, rgba(21, 43, 59, 0.96), rgba(10, 20, 29, 0.94));
+  box-shadow: 0 0 0 1px rgba(36, 214, 165, 0.06) inset;
+}
+
+.disk-ghost-button.el-button:hover,
+.disk-ghost-button.el-button:focus,
+.disk-icon-button.el-button:hover,
+.disk-icon-button.el-button:focus {
+  border-color: rgba(36, 214, 165, 0.62);
+  color: #f8fcff;
+  background:
+    linear-gradient(180deg, rgba(26, 58, 74, 0.98), rgba(13, 30, 42, 0.98));
+}
+
+.disk-icon-button.el-button {
+  width: 38px;
+  padding: 0;
+}
+
 .settings-list {
   display: grid;
   gap: 12px;
@@ -441,6 +562,25 @@ h1 {
   flex-wrap: wrap;
   justify-content: flex-end;
   gap: 8px;
+}
+
+.settings-button.el-button {
+  border: 1px solid rgba(72, 169, 248, 0.38);
+  color: #d9e7f5;
+  background: rgba(14, 28, 40, 0.9);
+}
+
+.settings-button.el-button:hover,
+.settings-button.el-button:focus {
+  border-color: rgba(36, 214, 165, 0.68);
+  color: #f8fcff;
+  background: rgba(24, 48, 66, 0.98);
+}
+
+.settings-button.primary.el-button {
+  color: #06141c;
+  border-color: rgba(36, 214, 165, 0.78);
+  background: linear-gradient(180deg, #24d6a5, #48a9f8);
 }
 
 .update-row {
