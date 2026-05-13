@@ -1563,7 +1563,7 @@ function runCollector() {
   return new Promise((resolve, reject) => {
     execFile(
       powershellExe,
-      ['-NoProfile', '-ExecutionPolicy', 'Bypass', '-File', scriptPath, '-IntervalSeconds', '2', '-Top', '30'],
+      ['-NoProfile', '-ExecutionPolicy', 'Bypass', '-File', scriptPath, '-IntervalSeconds', '1', '-Top', '30'],
       { cwd: processCwd, windowsHide: true, maxBuffer: 16 * 1024 * 1024 },
       (error, stdout, stderr) => {
         if (error) {
