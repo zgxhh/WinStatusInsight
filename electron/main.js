@@ -1,13 +1,19 @@
-import { app, BrowserWindow, Menu, Tray, ipcMain, shell } from 'electron'
+import { app, BrowserWindow, Menu, Tray, ipcMain, shell, Notification } from 'electron'
 import path from 'node:path'
-import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs'
+import { existsSync, mkdirSync, readFileSync, writeFileSync, createWriteStream } from 'node:fs'
+import { spawn } from 'node:child_process'
+import { Readable } from 'node:stream'
+import { pipeline } from 'node:stream/promises'
 
 let mainWindow = null
 let loadingWindow = null
 let serverModule = null
 let tray = null
 let isQuitting = false
-let appSettings = { closeToTray: false }
+let appSettings = { closeToTray: false, localProjectAlertsEnabled: true, lastProjectAlertAt: 0, lastUpdateCheckAt: 0 }
+let localServerUrl = ''
+let projectAlertTimer = null
+let lastProjectAlertSignature = ''
 
 function settingsPath() {
   return path.join(app.getPath('userData'), 'settings.json')
@@ -18,7 +24,7 @@ function loadSettings() {
     if (!existsSync(settingsPath())) return appSettings
     appSettings = { ...appSettings, ...JSON.parse(readFileSync(settingsPath(), 'utf8')) }
   } catch {
-    appSettings = { closeToTray: false }
+    appSettings = { closeToTray: false, localProjectAlertsEnabled: true, lastProjectAlertAt: 0, lastUpdateCheckAt: 0 }
   }
   return appSettings
 }
@@ -44,14 +50,31 @@ function showMainWindow() {
   mainWindow.focus()
 }
 
-function ensureTray() {
-  if (tray) return tray
-  const icon = resolveIconPath()
-  tray = new Tray(icon || path.join(app.getAppPath(), 'build', 'icon-256.png'))
-  tray.setToolTip('WinStatusInsight')
+function openLocalProjectsTab() {
+  showMainWindow()
+  mainWindow?.webContents.send('navigate-tab', 'projects')
+}
+
+function rebuildTrayMenu() {
+  if (!tray) return
   tray.setContextMenu(
     Menu.buildFromTemplate([
       { label: '显示窗口', click: showMainWindow },
+      { label: '打开本地项目页', click: openLocalProjectsTab },
+      { label: '一键停止可停止项目', click: stopStoppableProjectsFromTray },
+      { type: 'separator' },
+      {
+        label: '本地项目占用提醒',
+        type: 'checkbox',
+        checked: Boolean(appSettings.localProjectAlertsEnabled),
+        click: (menuItem) => {
+          saveSettings({ localProjectAlertsEnabled: menuItem.checked })
+          if (menuItem.checked) startProjectAlertTimer()
+          else stopProjectAlertTimer()
+          rebuildTrayMenu()
+        }
+      },
+      { type: 'separator' },
       {
         label: '退出',
         click: () => {
@@ -61,12 +84,20 @@ function ensureTray() {
       }
     ])
   )
+}
+
+function ensureTray() {
+  if (tray) return tray
+  const icon = resolveIconPath()
+  tray = new Tray(icon || path.join(app.getAppPath(), 'build', 'icon-256.png'))
+  tray.setToolTip('WinStatusInsight')
+  rebuildTrayMenu()
   tray.on('double-click', showMainWindow)
   return tray
 }
 
 function removeTrayIfDisabled() {
-  if (appSettings.closeToTray || !tray) return
+  if (appSettings.closeToTray || appSettings.localProjectAlertsEnabled || !tray) return
   tray.destroy()
   tray = null
 }
@@ -93,6 +124,84 @@ async function waitForServerAddress(server, timeoutMs = 12000) {
     await new Promise((resolve) => setTimeout(resolve, 50))
   }
   throw new Error('Local server did not expose a listening address')
+}
+
+async function fetchLocalJson(url, options = {}) {
+  if (!localServerUrl) throw new Error('本地服务尚未就绪')
+  const response = await fetch(`${localServerUrl}${url}`, options)
+  const data = await response.json()
+  if (!response.ok) throw new Error(data.message || '本地服务请求失败')
+  return data
+}
+
+async function stopStoppableProjectsFromTray() {
+  const projects = await fetchLocalJson('/api/local-projects')
+  const pids = projects.filter((project) => !project.protected).flatMap((project) => project.pids || [])
+  if (!pids.length) {
+    new Notification({ title: 'WinStatusInsight', body: '当前没有可停止的本地项目。' }).show()
+    return { message: '当前没有可停止的本地项目。' }
+  }
+  const result = await fetchLocalJson('/api/local-projects/stop', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ pids })
+  })
+  new Notification({ title: '本地项目已处理', body: result.message || '已停止可停止项目。' }).show()
+  mainWindow?.webContents.send('navigate-tab', 'projects')
+  return result
+}
+
+async function checkProjectAlerts() {
+  if (!appSettings.localProjectAlertsEnabled || !localServerUrl) return
+  try {
+    const projects = await fetchLocalJson('/api/local-projects')
+    const targets = projects
+      .filter((project) => !project.protected)
+      .filter((project) => Number(project.memoryGb || 0) >= 0.3 || Number(project.processCount || 0) >= 3)
+      .slice(0, 4)
+    if (!targets.length) return
+
+    const signature = targets.map((project) => `${project.id}:${project.processCount}:${project.memoryGb}`).join('|')
+    const now = Date.now()
+    if (signature === lastProjectAlertSignature && now - Number(appSettings.lastProjectAlertAt || 0) < 30 * 60 * 1000) return
+    lastProjectAlertSignature = signature
+    saveSettings({ lastProjectAlertAt: now })
+    ensureTray()
+
+    const projectText = targets.map((project) => `${project.name} ${project.memoryGb}GB`).join('、')
+    const notification = new Notification({
+      title: '本地项目占用提醒',
+      body: `检测到 ${targets.length} 个本地项目占用较高：${projectText}`,
+      actions: [
+        { type: 'button', text: '打开本地项目页' },
+        { type: 'button', text: '一键停止' }
+      ],
+      closeButtonText: '忽略'
+    })
+    notification.on('click', openLocalProjectsTab)
+    notification.on('action', (_event, index) => {
+      if (index === 1) stopStoppableProjectsFromTray().catch((error) => {
+        new Notification({ title: '本地项目处理失败', body: error.message }).show()
+      })
+      else openLocalProjectsTab()
+    })
+    notification.show()
+  } catch {
+    // Background reminders should never disturb the main app.
+  }
+}
+
+function startProjectAlertTimer() {
+  if (projectAlertTimer || !appSettings.localProjectAlertsEnabled) return
+  ensureTray()
+  projectAlertTimer = setInterval(checkProjectAlerts, 5 * 60 * 1000)
+  setTimeout(checkProjectAlerts, 45 * 1000)
+}
+
+function stopProjectAlertTimer() {
+  if (!projectAlertTimer) return
+  clearInterval(projectAlertTimer)
+  projectAlertTimer = null
 }
 
 async function startLocalServer() {
@@ -224,6 +333,7 @@ function createLoadingWindow() {
 async function createWindow() {
   createLoadingWindow()
   const baseUrl = await startLocalServer()
+  localServerUrl = baseUrl
   await waitForServer(baseUrl)
   const icon = resolveIconPath()
 
@@ -239,7 +349,8 @@ async function createWindow() {
     ...(icon ? { icon } : {}),
     webPreferences: {
       contextIsolation: true,
-      nodeIntegration: false
+      nodeIntegration: false,
+      preload: path.join(app.getAppPath(), 'electron', 'preload.js')
     }
   })
 
@@ -270,13 +381,84 @@ async function createWindow() {
 
 app.setAppUserModelId('cn.zgxhh.winstatusinsight')
 
+function compareVersions(a, b) {
+  const left = String(a || '0').replace(/^v/i, '').split('.').map((item) => Number(item) || 0)
+  const right = String(b || '0').replace(/^v/i, '').split('.').map((item) => Number(item) || 0)
+  for (let index = 0; index < Math.max(left.length, right.length); index += 1) {
+    if ((left[index] || 0) > (right[index] || 0)) return 1
+    if ((left[index] || 0) < (right[index] || 0)) return -1
+  }
+  return 0
+}
+
+async function checkForUpdates() {
+  const response = await fetch('https://api.github.com/repos/zgxhh/WinStatusInsight/releases/latest', {
+    headers: { 'User-Agent': 'WinStatusInsight', Accept: 'application/vnd.github+json' }
+  })
+  if (!response.ok) throw new Error('检查更新失败，请稍后重试。')
+  const release = await response.json()
+  const latestVersion = String(release.tag_name || release.name || '').replace(/^v/i, '')
+  const currentVersion = app.getVersion()
+  const asset = (release.assets || []).find((item) => /^WinStatusInsight-Setup-.*\.exe$/i.test(item.name))
+  saveSettings({ lastUpdateCheckAt: Date.now() })
+  return {
+    currentVersion,
+    latestVersion,
+    hasUpdate: compareVersions(currentVersion, latestVersion) < 0,
+    releaseUrl: release.html_url,
+    notes: release.body || '',
+    assetName: asset?.name || '',
+    assetUrl: asset?.browser_download_url || ''
+  }
+}
+
+async function downloadAndInstallUpdate() {
+  const info = await checkForUpdates()
+  if (!info.hasUpdate) return { ok: true, message: '当前已是最新版本。', info }
+  if (!info.assetUrl) {
+    if (info.releaseUrl) shell.openExternal(info.releaseUrl)
+    throw new Error('未找到安装版下载包，已打开 Release 页面。')
+  }
+
+  const updatesDir = path.join(app.getPath('userData'), 'updates')
+  mkdirSync(updatesDir, { recursive: true })
+  const installerPath = path.join(updatesDir, info.assetName || `WinStatusInsight-Setup-${info.latestVersion}.exe`)
+  const response = await fetch(info.assetUrl, { headers: { 'User-Agent': 'WinStatusInsight' } })
+  if (!response.ok || !response.body) throw new Error('下载新版安装包失败。')
+  await pipeline(Readable.fromWeb(response.body), createWriteStream(installerPath))
+
+  try {
+    const child = spawn(installerPath, ['/S'], { detached: true, stdio: 'ignore' })
+    child.unref()
+    isQuitting = true
+    setTimeout(() => app.quit(), 600)
+    return { ok: true, message: '新版安装程序已在后台启动，应用即将退出。', installerPath }
+  } catch (error) {
+    shell.showItemInFolder(installerPath)
+    throw new Error(`静默安装启动失败：${error.message}`)
+  }
+}
+
 ipcMain.handle('settings:get', () => appSettings)
 ipcMain.handle('settings:update', (event, nextSettings = {}) => {
-  const saved = saveSettings({ closeToTray: Boolean(nextSettings.closeToTray) })
-  if (saved.closeToTray) ensureTray()
+  const patch = {}
+  if ('closeToTray' in nextSettings) patch.closeToTray = Boolean(nextSettings.closeToTray)
+  if ('localProjectAlertsEnabled' in nextSettings) patch.localProjectAlertsEnabled = Boolean(nextSettings.localProjectAlertsEnabled)
+  const saved = saveSettings(patch)
+  if (saved.closeToTray || saved.localProjectAlertsEnabled) ensureTray()
   else removeTrayIfDisabled()
+  if (saved.localProjectAlertsEnabled) startProjectAlertTimer()
+  else stopProjectAlertTimer()
+  rebuildTrayMenu()
   return saved
 })
+ipcMain.handle('updates:check', checkForUpdates)
+ipcMain.handle('updates:download-install', downloadAndInstallUpdate)
+ipcMain.handle('projects:open-local', () => {
+  openLocalProjectsTab()
+  return { ok: true }
+})
+ipcMain.handle('projects:stop-stoppable', stopStoppableProjectsFromTray)
 
 const gotSingleInstanceLock = app.requestSingleInstanceLock()
 
@@ -293,12 +475,15 @@ if (!gotSingleInstanceLock) {
 
   app.whenReady().then(() => {
     loadSettings()
-    if (appSettings.closeToTray) ensureTray()
-    return createWindow()
+    if (appSettings.closeToTray || appSettings.localProjectAlertsEnabled) ensureTray()
+    return createWindow().then(() => {
+      if (appSettings.localProjectAlertsEnabled) startProjectAlertTimer()
+    })
   })
 }
 
 app.on('window-all-closed', () => {
+  stopProjectAlertTimer()
   if (serverModule?.server) serverModule.server.close()
   if (process.platform !== 'darwin' && !appSettings.closeToTray) app.quit()
 })

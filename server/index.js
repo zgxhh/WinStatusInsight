@@ -1286,6 +1286,23 @@ function buildAppGroups(processes) {
             workingSetGb: process.workingSetGb,
             cleanupAllowed: process.cleanupAllowed,
             path: process.path
+          })),
+        processes: group.processes
+          .sort((a, b) => b.cpuPercent - a.cpuPercent || b.workingSet - a.workingSet)
+          .map((process) => ({
+            name: process.name,
+            pid: process.pid,
+            cpuPercent: process.cpuPercent,
+            workingSetGb: process.workingSetGb,
+            risk: process.risk,
+            tags: process.tags,
+            cleanupAllowed: process.cleanupAllowed,
+            cleanupDisabledReason: process.cleanupDisabledReason,
+            path: process.path,
+            suggestion: process.suggestion,
+            system: process.isSystem,
+            protectedSystem: process.protectedSystem,
+            appGroupName: group.name
           }))
       }
       row.suggestion = buildGroupSuggestion(row)
@@ -1506,10 +1523,20 @@ function terminateProcess(pid) {
   })
 }
 
+function friendlyProcessError(error) {
+  const message = String(error?.message || error || '')
+  if (/access is denied|拒绝|denied|CouldNotStopProcess/i.test(message)) return '权限不足，已跳过。'
+  if (/not found|No Instance|Cannot find|找不到/i.test(message)) return '进程已退出，已跳过。'
+  return '停止失败，已跳过。'
+}
+
 function enrich(raw) {
   const startupItems = toArray(raw.startupItems)
   const services = toArray(raw.services)
-  const processes = toArray(raw.processes).map((p) => markProcess(p, startupItems, services))
+  const processes = toArray(raw.processes).map((p) => {
+    const marked = markProcess(p, startupItems, services)
+    return { ...marked, appGroupName: groupNameForProcess(marked) }
+  })
   const enriched = {
     ...raw,
     id: raw.id || `snapshot-${new Date(raw.capturedAt || Date.now()).toISOString().replace(/[:.]/g, '-')}`,
@@ -1684,36 +1711,60 @@ app.post('/api/startup-items/toggle', async (req, res) => {
 })
 
 app.post('/api/local-projects/stop', async (req, res) => {
-  const pids = [...new Set(toArray(req.body?.pids).map(Number).filter((pid) => Number.isInteger(pid) && pid > 0))]
+  const pids = [...new Set(toArray(req.body?.pids).map(Number).filter((pid) => Number.isInteger(pid)))]
   if (!pids.length || pids.length > 40) {
-    res.status(400).json({ message: '需要提供 1 到 40 个有效 PID。' })
+    res.status(400).json({ message: '需要提供 1 到 40 个 PID。' })
     return
   }
 
-  try {
-    const processes = []
-    for (const pid of pids) {
-      const processInfo = await getProcessInfo(pid)
-      const decision = canStopLocalProjectProcess(processInfo)
-      if (!decision.allowed) {
-        res.status(403).json({ message: decision.reason, process: processInfo })
-        return
-      }
-      processes.push(processInfo)
+  const stoppable = []
+  const stopped = []
+  const skipped = []
+  const failed = []
+
+  for (const pid of pids) {
+    if (pid <= 4) {
+      skipped.push({ pid, name: pid === 0 ? 'Idle' : 'System', reason: '系统保护进程，已跳过。' })
+      continue
     }
 
-    for (const processInfo of processes.sort((a, b) => Number(b.pid) - Number(a.pid))) {
-      await terminateProcess(Number(processInfo.pid))
+    let processInfo
+    try {
+      processInfo = await getProcessInfo(pid)
+    } catch (error) {
+      skipped.push({ pid, name: '', reason: friendlyProcessError(error) })
+      continue
     }
 
-    res.json({
-      ok: true,
-      message: `已停止 ${processes.length} 个本地项目进程。`,
-      processes
-    })
-  } catch (error) {
-    res.status(500).json({ message: error.message })
+    const decision = canStopLocalProjectProcess(processInfo)
+    if (!decision.allowed) {
+      skipped.push({ pid, name: processInfo.name, reason: decision.reason })
+      continue
+    }
+    stoppable.push(processInfo)
   }
+
+  for (const processInfo of stoppable.sort((a, b) => Number(b.pid) - Number(a.pid))) {
+    try {
+      await terminateProcess(Number(processInfo.pid))
+      stopped.push(processInfo)
+    } catch (error) {
+      failed.push({ pid: processInfo.pid, name: processInfo.name, reason: friendlyProcessError(error) })
+    }
+  }
+
+  const details = []
+  if (stopped.length) details.push(`已停止 ${stopped.length} 个进程`)
+  if (skipped.length) details.push(`跳过 ${skipped.length} 个受保护/已退出进程`)
+  if (failed.length) details.push(`${failed.length} 个进程停止失败`)
+
+  res.json({
+    ok: stopped.length > 0 && failed.length === 0,
+    message: details.length ? `${details.join('，')}。` : '没有可停止的进程。',
+    stopped,
+    skipped,
+    failed
+  })
 })
 
 app.post('/api/processes/:pid/terminate', async (req, res) => {

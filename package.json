@@ -1,6 +1,6 @@
 {
   "name": "win-status-insight",
-  "version": "2.0.0",
+  "version": "2.1.0",
   "description": "Windows local status analysis desktop tool",
   "author": "WinStatusInsight",
   "private": true,

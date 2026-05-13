@@ -1,6 +1,6 @@
 <script setup>
 import { computed, onBeforeUnmount, onMounted, ref } from 'vue'
-import { ElMessage, ElMessageBox } from 'element-plus'
+import { ElMessage } from 'element-plus'
 import VChart from 'vue-echarts'
 import { use } from 'echarts/core'
 import { CanvasRenderer } from 'echarts/renderers'
@@ -11,7 +11,6 @@ import {
   Database,
   FolderOpen,
   Gauge,
-  Info,
   LoaderCircle,
   Play,
   RefreshCcw,
@@ -40,18 +39,22 @@ const diskCheck = ref(null)
 const diskLoading = ref(false)
 const diskActionLoading = ref('')
 const diskLogs = ref([])
-const activeTab = ref('cpu')
+const activeTab = ref('resources')
 const showSystemItems = ref(true)
 const loadingGaugeValue = ref(10)
 const scoreAnimating = ref(false)
 const settingsVisible = ref(false)
-const desktopSettings = ref({ closeToTray: false })
+const desktopSettings = ref({ closeToTray: false, localProjectAlertsEnabled: true })
 const desktopSettingsLoading = ref(false)
+const updateChecking = ref(false)
+const updateInstalling = ref(false)
+const updateInfo = ref(null)
+const resourceSort = ref('impact')
 const startupItems = ref([])
 const startupLoading = ref(false)
 const togglingStartupId = ref('')
 let autoTimer = null
-let loadingGaugeTimer = null
+let loadingGaugeFrame = null
 
 const formatBytes = (bytes) => {
   const value = Number(bytes || 0)
@@ -105,13 +108,24 @@ const sortedRows = (rows = []) => {
   return visibleRows.sort((a, b) => Number(isProtectedRow(a)) - Number(isProtectedRow(b)))
 }
 
+const resourceScore = (row) => Number(row.cpuPercent || 0) * 2 + Number(row.workingSetGb || 0) * 10 + Number(row.count || 0) * 0.15
+const sortResourceRows = (rows = []) =>
+  sortedRows(rows).sort((a, b) => {
+    const protectedDelta = Number(isProtectedRow(a)) - Number(isProtectedRow(b))
+    if (protectedDelta) return protectedDelta
+    if (resourceSort.value === 'cpu') return Number(b.cpuPercent || 0) - Number(a.cpuPercent || 0)
+    if (resourceSort.value === 'memory') return Number(b.workingSetGb || 0) - Number(a.workingSetGb || 0)
+    return resourceScore(b) - resourceScore(a)
+  })
+
 const topCpuRows = computed(() => sortedRows(snapshot.value?.topCpu || []))
 const topMemoryRows = computed(() => sortedRows(snapshot.value?.topMemory || []))
 const backgroundRows = computed(() => sortedRows(snapshot.value?.background || []))
-const appGroupRows = computed(() => sortedRows(snapshot.value?.appGroups || []))
+const appGroupRows = computed(() => sortResourceRows(snapshot.value?.appGroups || []))
 const localProjectRows = computed(() => sortedRows(localProjects.value))
 const stoppableProjects = computed(() => localProjectRows.value.filter((project) => !project.protected))
 const startupRows = computed(() => sortedRows(startupItems.value.map((item) => ({ ...item, protected: !item.manageable }))))
+const groupProcessRows = (group) => sortResourceRows(group?.processes || group?.topProcesses || [])
 
 const ensureTwoCompareIds = async () => {
   if (compareIds.value.length < 2 && history.value.length >= 2) {
@@ -169,7 +183,7 @@ const restoreLatestSnapshot = async () => {
 const loadDesktopSettings = async () => {
   if (!desktopApi.value) return
   try {
-    desktopSettings.value = await desktopApi.value.getSettings()
+    desktopSettings.value = { closeToTray: false, localProjectAlertsEnabled: true, ...(await desktopApi.value.getSettings()) }
   } catch (error) {
     ElMessage.error(error.message)
   }
@@ -195,20 +209,6 @@ const toggleStartupItem = async (row, enabled) => {
     ElMessage.warning(row.disabledReason || '该启动项暂不支持在工具内开关')
     return
   }
-  const confirmed = await ElMessageBox.confirm(
-    `确认${enabled ? '开启' : '关闭'}开机自启动吗？\n应用：${row.displayName || row.name}\n作用：${row.description || '开机时自动启动的应用'}\n原始项：${row.name}\n命令：${row.command}`,
-    `${enabled ? '开启' : '关闭'}自启动`,
-    {
-      confirmButtonText: enabled ? '开启' : '关闭',
-      cancelButtonText: '取消',
-      type: enabled ? 'info' : 'warning'
-    }
-  ).then(() => true).catch(() => false)
-  if (!confirmed) {
-    row.enabled = !enabled
-    return
-  }
-
   togglingStartupId.value = row.id
   try {
     const response = await fetch('/api/startup-items/toggle', {
@@ -246,23 +246,73 @@ const updateCloseToTray = async (value) => {
   }
 }
 
+const updateLocalProjectAlerts = async (value) => {
+  if (!desktopApi.value) {
+    desktopSettings.value.localProjectAlertsEnabled = false
+    ElMessage.info('这个设置只在桌面应用中生效')
+    return
+  }
+  desktopSettingsLoading.value = true
+  try {
+    desktopSettings.value = await desktopApi.value.updateSettings({ localProjectAlertsEnabled: value })
+    ElMessage.success(value ? '已开启：本地项目占用时托盘提醒' : '已关闭：本地项目托盘提醒')
+  } catch (error) {
+    desktopSettings.value.localProjectAlertsEnabled = !value
+    ElMessage.error(error.message)
+  } finally {
+    desktopSettingsLoading.value = false
+  }
+}
+
+const checkForUpdates = async () => {
+  if (!desktopApi.value?.checkForUpdates) {
+    ElMessage.info('版本更新只在桌面应用中可用')
+    return
+  }
+  updateChecking.value = true
+  try {
+    updateInfo.value = await desktopApi.value.checkForUpdates()
+    ElMessage.success(updateInfo.value.hasUpdate ? `发现新版本 ${updateInfo.value.latestVersion}` : '已是最新版本')
+  } catch (error) {
+    ElMessage.error(error.message)
+  } finally {
+    updateChecking.value = false
+  }
+}
+
+const downloadAndInstallUpdate = async () => {
+  if (!desktopApi.value?.downloadAndInstallUpdate) return
+  updateInstalling.value = true
+  try {
+    const result = await desktopApi.value.downloadAndInstallUpdate()
+    ElMessage.success(result.message || '安装程序已启动')
+  } catch (error) {
+    ElMessage.error(error.message)
+  } finally {
+    updateInstalling.value = false
+  }
+}
+
 const startLoadingGauge = () => {
-  if (loadingGaugeTimer) window.clearInterval(loadingGaugeTimer)
+  stopLoadingGauge()
   scoreAnimating.value = true
-  loadingGaugeValue.value = snapshot.value?.analysis?.score ?? 0
-  loadingGaugeTimer = window.setInterval(() => {
-    let nextValue = Math.round(Math.random() * 100)
-    if (Math.abs(nextValue - loadingGaugeValue.value) < 34) {
-      nextValue = (nextValue + 47 + Math.round(Math.random() * 28)) % 101
-    }
-    loadingGaugeValue.value = nextValue
-  }, 48)
+  const base = Math.max(18, Math.min(78, Number(snapshot.value?.analysis?.score ?? 42)))
+  const startedAt = performance.now()
+  const tick = (now) => {
+    const elapsed = now - startedAt
+    const surge = Math.sin(elapsed / 115) * 32
+    const pulse = Math.sin(elapsed / 270 + 0.8) * 16
+    const kick = Math.max(0, Math.sin(elapsed / 680)) * 18
+    loadingGaugeValue.value = Math.max(8, Math.min(98, Number((base + surge + pulse + kick).toFixed(1))))
+    loadingGaugeFrame = window.requestAnimationFrame(tick)
+  }
+  loadingGaugeFrame = window.requestAnimationFrame(tick)
 }
 
 const stopLoadingGauge = () => {
-  if (!loadingGaugeTimer) return
-  window.clearInterval(loadingGaugeTimer)
-  loadingGaugeTimer = null
+  if (!loadingGaugeFrame) return
+  window.cancelAnimationFrame(loadingGaugeFrame)
+  loadingGaugeFrame = null
 }
 
 const settleGaugeToScore = (finalScore) =>
@@ -390,26 +440,8 @@ const openDiskPath = async (targetPath) => {
   }
 }
 
-const confirmDiskAction = async (item, title, confirmButtonText) => {
-  const targetText = item.target ? `\n目标：${item.target}` : ''
-  const sizeText = `\n预计涉及：${formatBytes(item.sizeBytes || item.targetSizeBytes || 0)}`
-  const confirmed = await ElMessageBox.confirm(
-    `路径：${item.path}${targetText}${sizeText}\n风险：${item.risk}\n执行后：${item.action || item.status}`,
-    title,
-    {
-      confirmButtonText,
-      cancelButtonText: '取消',
-      type: item.id === 'recycle-bin' || item.operation === 'clean' ? 'warning' : 'info'
-    }
-  ).then(() => true).catch(() => false)
-  return confirmed
-}
-
 const cleanDiskItem = async (item) => {
   if (item.operation !== 'clean') return
-  const confirmed = await confirmDiskAction(item, item.id === 'recycle-bin' ? '清空回收站' : '清理磁盘缓存', item.id === 'recycle-bin' ? '确认清空' : '确认清理')
-  if (!confirmed) return
-
   diskActionLoading.value = item.id
   try {
     const response = await fetch('/api/disk-check/clean', {
@@ -432,9 +464,6 @@ const cleanDiskItem = async (item) => {
 
 const migrateDiskItem = async (item) => {
   if (item.operation !== 'migrate') return
-  const confirmed = await confirmDiskAction(item, '迁移开发缓存', '确认迁移')
-  if (!confirmed) return
-
   diskActionLoading.value = item.id
   try {
     const response = await fetch('/api/disk-check/migrate', {
@@ -465,20 +494,15 @@ const cleanupItemFromRow = (row) => ({
   path: row.path
 })
 
+const showStopResult = (result) => {
+  const skipped = result.skipped?.length || 0
+  const failed = result.failed?.length || 0
+  if (skipped || failed) ElMessage.warning(result.message || `已处理，跳过 ${skipped + failed} 个进程`)
+  else ElMessage.success(result.message || '已停止项目')
+}
+
 const cleanupProcess = async (item) => {
   if (!item.cleanable) return
-  const pathText = item.path ? `\n路径：${item.path}` : '\n路径：未能读取'
-  const confirmed = await ElMessageBox.confirm(
-    `确认结束 ${item.processName} (${item.pid}) 吗？${pathText}\n\n结束后该应用未保存的数据可能会丢失。`,
-    '清理进程',
-    {
-      confirmButtonText: '结束进程',
-      cancelButtonText: '取消',
-      type: 'warning'
-    }
-  ).then(() => true).catch(() => false)
-  if (!confirmed) return
-
   cleaningPid.value = item.pid
   try {
     const response = await fetch(`/api/processes/${item.pid}/terminate`, { method: 'POST' })
@@ -495,19 +519,6 @@ const cleanupProcess = async (item) => {
 
 const stopLocalProject = async (project) => {
   if (project.protected) return
-  const portText = project.ports?.length ? project.ports.join(', ') : '未检测到监听端口'
-  const pidsText = project.pids.join(', ')
-  const confirmed = await ElMessageBox.confirm(
-    `确认停止本地项目「${project.name}」吗？\n路径：${project.projectPath || '未识别'}\n端口：${portText}\nPID：${pidsText}\n\n停止后对应 dev server 会退出，未保存的终端输出不会保留。`,
-    '停止本地项目',
-    {
-      confirmButtonText: '停止项目',
-      cancelButtonText: '取消',
-      type: 'warning'
-    }
-  ).then(() => true).catch(() => false)
-  if (!confirmed) return
-
   stoppingProjectId.value = project.id
   try {
     const response = await fetch('/api/local-projects/stop', {
@@ -517,7 +528,7 @@ const stopLocalProject = async (project) => {
     })
     const result = await response.json()
     if (!response.ok) throw new Error(result.message || '停止项目失败')
-    ElMessage.success(result.message || '已停止项目')
+    showStopResult(result)
     await loadLocalProjects()
     await readStatus()
   } catch (error) {
@@ -531,18 +542,6 @@ const stopAllLocalProjects = async () => {
   const projects = stoppableProjects.value
   if (!projects.length) return
   const pids = projects.flatMap((project) => project.pids)
-  const names = projects.map((project) => `${project.name}${project.ports?.length ? `(${project.ports.join(', ')})` : ''}`).join('、')
-  const confirmed = await ElMessageBox.confirm(
-    `确认停止全部可停止的本地项目吗？\n项目：${names}\nPID：${pids.join(', ')}\n\n当前面板已受保护，不会被停止。`,
-    '全部停止本地项目',
-    {
-      confirmButtonText: '全部停止',
-      cancelButtonText: '取消',
-      type: 'warning'
-    }
-  ).then(() => true).catch(() => false)
-  if (!confirmed) return
-
   stoppingAllProjects.value = true
   try {
     const response = await fetch('/api/local-projects/stop', {
@@ -552,7 +551,7 @@ const stopAllLocalProjects = async () => {
     })
     const result = await response.json()
     if (!response.ok) throw new Error(result.message || '全部停止失败')
-    ElMessage.success(result.message || '已停止全部可停止项目')
+    showStopResult(result)
     await loadLocalProjects()
     await readStatus()
   } catch (error) {
@@ -722,6 +721,10 @@ const compareAnalysis = computed(() => {
 
 onMounted(async () => {
   await Promise.all([loadHistory(), loadDesktopSettings()])
+  desktopApi.value?.onNavigateTab?.((tabName) => {
+    activeTab.value = tabName
+    if (tabName === 'projects') loadLocalProjects()
+  })
   await restoreLatestSnapshot()
   await ensureTwoCompareIds()
   loadStartupItems()
@@ -774,6 +777,39 @@ onBeforeUnmount(() => {
             :loading="desktopSettingsLoading"
             @change="updateCloseToTray"
           />
+        </div>
+        <div class="settings-row">
+          <div>
+            <strong>本地项目占用提醒</strong>
+            <span>检测到本地开发项目长时间占用资源时，通过托盘提醒打开项目页或一键停止。</span>
+          </div>
+          <el-switch
+            v-model="desktopSettings.localProjectAlertsEnabled"
+            :loading="desktopSettingsLoading"
+            @change="updateLocalProjectAlerts"
+          />
+        </div>
+        <div class="settings-row update-row">
+          <div>
+            <strong>检查版本更新</strong>
+            <span v-if="updateInfo">
+              当前 {{ updateInfo.currentVersion }}，最新 {{ updateInfo.latestVersion }}。
+              {{ updateInfo.hasUpdate ? '可下载安装新版。' : '已是最新版本。' }}
+            </span>
+            <span v-else>手动联网检查 GitHub Release，发现新版后可静默下载安装。</span>
+          </div>
+          <div class="settings-actions">
+            <el-button size="small" :loading="updateChecking" @click="checkForUpdates">检查</el-button>
+            <el-button
+              v-if="updateInfo?.hasUpdate"
+              size="small"
+              type="primary"
+              :loading="updateInstalling"
+              @click="downloadAndInstallUpdate"
+            >
+              下载安装
+            </el-button>
+          </div>
         </div>
       </div>
     </el-dialog>
@@ -870,51 +906,53 @@ onBeforeUnmount(() => {
         <span>显示系统项</span>
       </div>
       <el-tabs v-model="activeTab">
-        <el-tab-pane label="CPU 高占用" name="cpu">
-          <el-table :data="topCpuRows" height="390" stripe :row-class-name="rowClassName">
-            <el-table-column prop="name" label="进程" min-width="145" sortable />
-            <el-table-column prop="pid" label="PID" width="90" sortable />
-            <el-table-column prop="cpuPercent" label="CPU %" width="105" sortable />
-            <el-table-column label="内存" width="115" sortable>
-              <template #default="{ row }">{{ row.workingSetGb }} GB</template>
-            </el-table-column>
-            <el-table-column label="风险" width="110">
-              <template #default="{ row }"><el-tag :type="riskType(row.risk)">{{ riskLabel(row.risk) }}</el-tag></template>
-            </el-table-column>
-            <el-table-column label="标签" min-width="200">
-              <template #default="{ row }">
-                <el-tag v-for="tag in row.tags" :key="tag" class="tag" effect="plain">{{ tag }}</el-tag>
-              </template>
-            </el-table-column>
-            <el-table-column prop="path" label="路径" min-width="280" show-overflow-tooltip />
-            <el-table-column label="控制" width="105" fixed="right">
-              <template #default="{ row }">
-                <el-button
-                  v-if="row.cleanupAllowed"
-                  size="small"
-                  type="danger"
-                  :loading="cleaningPid === row.pid"
-                  @click="cleanupProcess(cleanupItemFromRow(row))"
-                >
-                  清理
-                </el-button>
-              </template>
-            </el-table-column>
-          </el-table>
-        </el-tab-pane>
-
-        <el-tab-pane label="应用聚合" name="groups">
-          <div class="pane-tools">
-            <el-tooltip
-              placement="left"
-              content="把同一个应用的多个进程合并统计，例如 Edge、Chrome、Node/Vite、Codex，用来看整体 CPU、内存和风险。"
-            >
-              <el-button class="hint-button" circle text>
-                <Info :size="16" />
-              </el-button>
-            </el-tooltip>
+        <el-tab-pane label="资源占用" name="resources">
+          <div class="resource-toolbar">
+            <div>
+              <strong>应用整体与进程明细</strong>
+              <span>先看哪个应用整体占用高，展开后再处理具体 PID。</span>
+            </div>
+            <el-radio-group v-model="resourceSort" size="small">
+              <el-radio-button label="impact">综合影响</el-radio-button>
+              <el-radio-button label="cpu">CPU 优先</el-radio-button>
+              <el-radio-button label="memory">内存优先</el-radio-button>
+            </el-radio-group>
           </div>
-          <el-table :data="appGroupRows" height="360" stripe :row-class-name="rowClassName">
+          <el-table :data="appGroupRows" height="390" stripe row-key="name" :row-class-name="rowClassName">
+            <el-table-column type="expand" width="44">
+              <template #default="{ row }">
+                <div class="process-detail">
+                  <div class="process-detail-title">{{ row.name }} 的进程明细</div>
+                  <el-table :data="groupProcessRows(row)" size="small" stripe>
+                    <el-table-column prop="name" label="进程" min-width="140" />
+                    <el-table-column prop="pid" label="PID" width="90" />
+                    <el-table-column prop="cpuPercent" label="CPU %" width="95" />
+                    <el-table-column label="内存" width="110">
+                      <template #default="{ row: processRow }">{{ processRow.workingSetGb }} GB</template>
+                    </el-table-column>
+                    <el-table-column label="风险" width="100">
+                      <template #default="{ row: processRow }">
+                        <el-tag :type="riskType(processRow.risk)">{{ riskLabel(processRow.risk) }}</el-tag>
+                      </template>
+                    </el-table-column>
+                    <el-table-column prop="path" label="路径" min-width="260" show-overflow-tooltip />
+                    <el-table-column label="控制" width="100" fixed="right">
+                      <template #default="{ row: processRow }">
+                        <el-button
+                          v-if="processRow.cleanupAllowed"
+                          size="small"
+                          type="danger"
+                          :loading="cleaningPid === processRow.pid"
+                          @click="cleanupProcess(cleanupItemFromRow(processRow))"
+                        >
+                          清理
+                        </el-button>
+                      </template>
+                    </el-table-column>
+                  </el-table>
+                </div>
+              </template>
+            </el-table-column>
             <el-table-column prop="name" label="应用/组件" min-width="150" sortable />
             <el-table-column prop="count" label="进程数" width="95" sortable />
             <el-table-column prop="cpuPercent" label="CPU %" width="105" sortable />
@@ -926,39 +964,10 @@ onBeforeUnmount(() => {
             </el-table-column>
             <el-table-column label="主要进程" min-width="260" show-overflow-tooltip>
               <template #default="{ row }">
-                {{ row.topProcesses.map((item) => `${item.name}(${item.pid})`).join('、') }}
+                {{ (row.topProcesses || []).map((item) => `${item.name}(${item.pid})`).join('、') }}
               </template>
             </el-table-column>
             <el-table-column prop="suggestion" label="建议" min-width="300" show-overflow-tooltip />
-          </el-table>
-        </el-tab-pane>
-
-        <el-tab-pane label="内存高占用" name="memory">
-          <el-table :data="topMemoryRows" height="390" stripe :row-class-name="rowClassName">
-            <el-table-column prop="name" label="进程" min-width="145" sortable />
-            <el-table-column prop="pid" label="PID" width="90" sortable />
-            <el-table-column label="内存" width="115" sortable>
-              <template #default="{ row }">{{ row.workingSetGb }} GB</template>
-            </el-table-column>
-            <el-table-column prop="cpuPercent" label="CPU %" width="105" sortable />
-            <el-table-column label="风险" width="110">
-              <template #default="{ row }"><el-tag :type="riskType(row.risk)">{{ riskLabel(row.risk) }}</el-tag></template>
-            </el-table-column>
-            <el-table-column label="建议" min-width="250" prop="suggestion" show-overflow-tooltip />
-            <el-table-column prop="path" label="路径" min-width="280" show-overflow-tooltip />
-            <el-table-column label="控制" width="105" fixed="right">
-              <template #default="{ row }">
-                <el-button
-                  v-if="row.cleanupAllowed"
-                  size="small"
-                  type="danger"
-                  :loading="cleaningPid === row.pid"
-                  @click="cleanupProcess(cleanupItemFromRow(row))"
-                >
-                  清理
-                </el-button>
-              </template>
-            </el-table-column>
           </el-table>
         </el-tab-pane>
 
