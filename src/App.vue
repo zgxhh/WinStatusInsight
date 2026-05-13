@@ -196,7 +196,7 @@ const toggleStartupItem = async (row, enabled) => {
     return
   }
   const confirmed = await ElMessageBox.confirm(
-    `确认${enabled ? '开启' : '关闭'}开机自启动吗？\n应用：${row.name}\n位置：${row.location}\n命令：${row.command}`,
+    `确认${enabled ? '开启' : '关闭'}开机自启动吗？\n应用：${row.displayName || row.name}\n作用：${row.description || '开机时自动启动的应用'}\n原始项：${row.name}\n命令：${row.command}`,
     `${enabled ? '开启' : '关闭'}自启动`,
     {
       confirmButtonText: enabled ? '开启' : '关闭',
@@ -218,7 +218,7 @@ const toggleStartupItem = async (row, enabled) => {
     })
     const result = await response.json()
     if (!response.ok) throw new Error(result.message || '切换自启动失败')
-    ElMessage.success(`${row.name} 已${enabled ? '开启' : '关闭'}开机自启动`)
+    ElMessage.success(`${row.displayName || row.name} 已${enabled ? '开启' : '关闭'}开机自启动`)
     await loadStartupItems()
   } catch (error) {
     row.enabled = !enabled
@@ -251,9 +251,12 @@ const startLoadingGauge = () => {
   scoreAnimating.value = true
   loadingGaugeValue.value = snapshot.value?.analysis?.score ?? 0
   loadingGaugeTimer = window.setInterval(() => {
-    const nextValue = loadingGaugeValue.value + 17 + Math.round(Math.random() * 11)
-    loadingGaugeValue.value = nextValue % 101
-  }, 42)
+    let nextValue = Math.round(Math.random() * 100)
+    if (Math.abs(nextValue - loadingGaugeValue.value) < 34) {
+      nextValue = (nextValue + 47 + Math.round(Math.random() * 28)) % 101
+    }
+    loadingGaugeValue.value = nextValue
+  }, 48)
 }
 
 const stopLoadingGauge = () => {
@@ -569,6 +572,8 @@ const scoreOption = computed(() => {
         min: 0,
         max: 100,
         radius: '92%',
+        animationDurationUpdate: loading.value ? 0 : 90,
+        animationEasingUpdate: loading.value ? 'linear' : 'cubicOut',
         progress: {
           show: true,
           width: 16,
@@ -579,7 +584,7 @@ const scoreOption = computed(() => {
         splitLine: { distance: -22, length: 8, lineStyle: { color: '#607080' } },
         axisLabel: { color: '#9eb1c6', distance: 24 },
         pointer: { width: loading.value ? 6 : 5 },
-        detail: { valueAnimation: true, formatter: '{value}', color: '#f6fbff', fontSize: 42, offsetCenter: [0, '32%'] },
+        detail: { valueAnimation: !loading.value && !scoreAnimating.value, formatter: '{value}', color: '#f6fbff', fontSize: 42, offsetCenter: [0, '32%'] },
         title: { color: '#9eb1c6', fontSize: 14, offsetCenter: [0, '58%'] },
         data: [{ value: score, name: label }]
       }
@@ -966,7 +971,14 @@ onBeforeUnmount(() => {
             </el-button>
           </div>
           <el-table :data="startupRows" height="390" stripe :row-class-name="rowClassName">
-            <el-table-column prop="name" label="应用" min-width="170" sortable />
+            <el-table-column prop="displayName" label="应用名称（中文名）" min-width="220" sortable>
+              <template #default="{ row }">
+                <div class="startup-name">
+                  <strong>{{ row.displayName || row.name }}</strong>
+                  <small v-if="row.name && row.name !== row.displayName">{{ row.name }}</small>
+                </div>
+              </template>
+            </el-table-column>
             <el-table-column label="开机自启动" width="140">
               <template #default="{ row }">
                 <el-switch
@@ -977,18 +989,15 @@ onBeforeUnmount(() => {
                 />
               </template>
             </el-table-column>
-            <el-table-column prop="scope" label="范围" width="105" />
-            <el-table-column prop="type" label="类型" width="125">
-              <template #default="{ row }">{{ row.type === 'registry-run' ? '注册表' : '启动文件夹' }}</template>
-            </el-table-column>
+            <el-table-column prop="description" label="应用作用简介" min-width="360" show-overflow-tooltip />
+            <el-table-column prop="scope" label="来源" width="105" />
             <el-table-column label="状态" width="125">
               <template #default="{ row }">
-                <el-tag :type="row.enabled ? 'success' : 'info'">{{ row.enabled ? '已开启' : '已关闭' }}</el-tag>
+                <el-tooltip :disabled="!row.disabledReason" :content="row.disabledReason" placement="top">
+                  <el-tag :type="row.enabled ? 'success' : 'info'">{{ row.enabled ? '已开启' : '已关闭' }}</el-tag>
+                </el-tooltip>
               </template>
             </el-table-column>
-            <el-table-column prop="location" label="位置" min-width="260" show-overflow-tooltip />
-            <el-table-column prop="command" label="命令/文件" min-width="320" show-overflow-tooltip />
-            <el-table-column prop="disabledReason" label="说明" min-width="220" show-overflow-tooltip />
           </el-table>
         </el-tab-pane>
 

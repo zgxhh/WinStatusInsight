@@ -1004,6 +1004,75 @@ $items = foreach ($p in $processes) {
   return buildLocalProjects(toArray(await runPowerShellJson(script)))
 }
 
+const STARTUP_APP_HINTS = [
+  {
+    pattern: /acappdaemon|accessoryapp|accessories_center/i,
+    displayName: '华为配件中心',
+    description: '华为电脑管家配件与外设相关组件，用于配件连接、状态同步和辅助功能。'
+  },
+  {
+    pattern: /baiduyundetect|baidunetdisk|百度网盘/i,
+    displayName: '百度网盘',
+    description: '百度网盘客户端启动检测与辅助唤起组件，用于网盘后台初始化。'
+  },
+  {
+    pattern: /ctfmon/i,
+    displayName: 'Windows 输入法',
+    description: 'Windows 文本输入、输入法和语言栏相关组件，通常建议保持开启。'
+  },
+  {
+    pattern: /microsoftedgeautolaunch|msedge/i,
+    displayName: 'Microsoft Edge',
+    description: 'Edge 浏览器开机预加载或会话恢复入口，可按使用习惯决定是否保留。'
+  },
+  {
+    pattern: /onedrive/i,
+    displayName: 'Microsoft OneDrive',
+    description: '微软云盘同步客户端，用于登录后自动同步文件和云端状态。'
+  },
+  {
+    pattern: /youdaodict|youdao/i,
+    displayName: '有道词典',
+    description: '有道词典后台启动项，用于开机后常驻和快捷取词。'
+  },
+  {
+    pattern: /onenote/i,
+    displayName: '发送至 OneNote',
+    description: 'OneNote 快捷发送组件，用于把内容快速保存到 OneNote。'
+  },
+  {
+    pattern: /adobe ccxprocess|ccxprocess|creative cloud/i,
+    displayName: 'Adobe Creative Cloud',
+    description: 'Adobe Creative Cloud 体验组件，用于 Adobe 应用登录、同步和面板服务。'
+  },
+  {
+    pattern: /securityhealth/i,
+    displayName: 'Windows 安全中心',
+    description: 'Windows 安全中心托盘提醒和安全状态入口，系统级项目建议保持开启。'
+  },
+  {
+    pattern: /sysdiag|hipstray|huorong|火绒/i,
+    displayName: '火绒安全',
+    description: '火绒安全软件托盘入口和防护状态组件，系统级安全项目建议保持开启。'
+  }
+]
+
+function enrichStartupItem(item) {
+  const text = `${item.name || ''} ${item.command || ''} ${item.location || ''}`
+  const hint = STARTUP_APP_HINTS.find((entry) => entry.pattern.test(text))
+  const displayName = hint?.displayName || item.name || '未知应用'
+  const description =
+    hint?.description ||
+    (item.scope === '所有用户'
+      ? '系统级开机启动项，影响所有用户；当前版本只读展示，避免误改全局配置。'
+      : '当前用户开机启动项，可按使用频率决定是否随 Windows 自动启动。')
+  return {
+    ...item,
+    displayName,
+    description
+  }
+}
+
 async function listStartupItems() {
   const script = `
 $ErrorActionPreference = "SilentlyContinue"
@@ -1083,7 +1152,7 @@ if (Test-Path $disabledFolder) {
 }
 @($items | Sort-Object @{Expression="enabled";Descending=$true}, name) | ConvertTo-Json -Depth 5 -Compress
 `
-  return toArray(await runPowerShellJson(script))
+  return toArray(await runPowerShellJson(script)).map(enrichStartupItem)
 }
 
 async function toggleStartupItem({ name, command, type, enabled }) {

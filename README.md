@@ -4,6 +4,14 @@ WinStatusInsight 是一款面向 Windows 桌面环境的本地状态洞察工具
 
 它不是远程监控工具，也不上传数据。所有采集、分析、快照和清理迁移动作都在本机完成。
 
+## 产品定位
+
+WinStatusInsight 面向个人开发者、Windows 重度办公用户和本地调试环境，重点解决三类问题：
+
+- **卡顿归因**：把 CPU、内存、进程、应用聚合和历史趋势放在同一个视图里，帮助判断卡顿来自浏览器、资源管理器、本地开发服务还是后台进程。
+- **本地开发环境治理**：识别正在运行的 Vite、Next、Node、.NET Web API、`.NET watch`、pnpm、bun 等开发服务，并支持对非面板项目执行确认式停止。
+- **低风险系统维护**：只对临时文件、可重建开发缓存和明确可恢复的自启动项提供操作入口；高风险应用数据只做分析提示，不直接删除或迁移。
+
 ## 下载
 
 - [便携版 WinStatusInsight.exe](https://github.com/zgxhh/WinStatusInsight/releases/latest/download/WinStatusInsight.exe)
@@ -18,6 +26,10 @@ WinStatusInsight 是一款面向 Windows 桌面环境的本地状态洞察工具
 ### 总览
 
 ![总览](docs/assets/win-status-insight-dashboard.png)
+
+### 资源趋势
+
+![资源趋势](docs/assets/win-status-insight-resource-trend.png)
 
 ### 应用聚合
 
