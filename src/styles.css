@@ -10,7 +10,7 @@
 
 body {
   margin: 0;
-  min-width: 1180px;
+  min-width: 0;
   background:
     linear-gradient(135deg, rgba(22, 214, 165, 0.14), transparent 30%),
     linear-gradient(225deg, rgba(242, 184, 75, 0.12), transparent 28%),
@@ -77,6 +77,8 @@ h1 {
 }
 
 .command-button.el-button {
+  position: relative;
+  overflow: hidden;
   min-width: 112px;
   border: 1px solid rgba(126, 158, 190, 0.2);
   border-radius: 8px;
@@ -93,9 +95,111 @@ h1 {
 }
 
 .command-button.command-primary.el-button {
+  height: 44px;
+  min-width: 178px;
+  padding: 0 14px 0 8px;
   color: #f8fcff;
-  border-color: rgba(72, 169, 248, 0.72);
-  background: linear-gradient(180deg, #279eff, #1478d8);
+  border-color: rgba(76, 215, 255, 0.72);
+  border-radius: 4px 14px 4px 14px;
+  background:
+    linear-gradient(90deg, rgba(20, 229, 213, 0.14), transparent 34%),
+    linear-gradient(180deg, rgba(16, 43, 61, 0.96), rgba(5, 15, 25, 0.96));
+  box-shadow:
+    0 0 0 1px rgba(105, 232, 255, 0.18) inset,
+    0 0 20px rgba(38, 186, 255, 0.22),
+    0 12px 24px rgba(0, 0, 0, 0.28);
+  clip-path: polygon(0 11px, 11px 0, calc(100% - 13px) 0, 100% 13px, 100% calc(100% - 7px), calc(100% - 7px) 100%, 9px 100%, 0 calc(100% - 9px));
+  text-shadow: 0 0 10px rgba(129, 237, 255, 0.28);
+}
+
+.command-button.command-primary.el-button::before {
+  content: "";
+  position: absolute;
+  inset: 4px;
+  border: 1px solid rgba(55, 238, 229, 0.3);
+  border-right-color: rgba(72, 169, 248, 0.42);
+  border-radius: 3px 10px 3px 10px;
+  clip-path: polygon(0 8px, 8px 0, calc(100% - 10px) 0, 100% 10px, 100% calc(100% - 5px), calc(100% - 5px) 100%, 6px 100%, 0 calc(100% - 6px));
+  pointer-events: none;
+}
+
+.command-button.command-primary.el-button::after {
+  content: "";
+  position: absolute;
+  right: 14px;
+  bottom: 10px;
+  width: 34px;
+  height: 6px;
+  background:
+    radial-gradient(circle, rgba(42, 236, 226, 0.82) 0 1.4px, transparent 1.8px) 0 0 / 8px 6px repeat-x;
+  opacity: 0.72;
+  transition: transform 0.25s ease, opacity 0.25s ease;
+  pointer-events: none;
+}
+
+.command-button.command-primary.el-button:hover,
+.command-button.command-primary.el-button:focus {
+  border-color: rgba(63, 250, 229, 0.9);
+  background:
+    linear-gradient(90deg, rgba(20, 229, 213, 0.2), transparent 36%),
+    linear-gradient(180deg, rgba(19, 55, 77, 0.98), rgba(7, 22, 35, 0.98));
+  box-shadow:
+    0 0 0 1px rgba(109, 248, 255, 0.26) inset,
+    0 0 24px rgba(36, 214, 165, 0.22),
+    0 0 26px rgba(35, 150, 255, 0.34),
+    0 12px 28px rgba(0, 0, 0, 0.34);
+}
+
+.command-button.command-primary.el-button:hover::after,
+.command-button.command-primary.el-button:focus::after {
+  opacity: 1;
+  transform: translateX(5px);
+}
+
+.command-button.command-primary.el-button .command-primary-icon,
+.command-button.command-primary.el-button .command-primary-label,
+.command-button.command-primary.el-button .command-flow-dots {
+  position: relative;
+  z-index: 1;
+}
+
+.command-primary-icon {
+  width: 34px;
+  height: 34px;
+  margin-left: 0;
+  margin-right: 10px;
+  padding: 7px;
+  border: 1px solid rgba(63, 238, 229, 0.62);
+  border-radius: 8px;
+  color: #bffcff;
+  background:
+    radial-gradient(circle at 50% 46%, rgba(74, 216, 255, 0.24), transparent 56%),
+    rgba(7, 27, 42, 0.92);
+  box-shadow:
+    0 0 0 1px rgba(132, 250, 255, 0.12) inset,
+    0 0 14px rgba(36, 214, 165, 0.24);
+  filter: drop-shadow(0 0 7px rgba(62, 235, 229, 0.38));
+}
+
+.command-primary-label {
+  display: inline-flex;
+  align-items: center;
+  min-height: 26px;
+  padding-left: 13px;
+  border-left: 1px solid rgba(145, 218, 241, 0.28);
+  font-size: 15px;
+  font-weight: 800;
+  letter-spacing: 0;
+}
+
+.command-flow-dots {
+  width: 28px;
+  height: 8px;
+  margin-left: 12px;
+  background:
+    linear-gradient(90deg, rgba(42, 236, 226, 0.16), rgba(42, 236, 226, 0.78)) left 50% / 16px 1px no-repeat,
+    radial-gradient(circle, rgba(42, 236, 226, 0.9) 0 1.2px, transparent 1.7px) 18px 50% / 6px 6px repeat-x;
+  opacity: 0.82;
 }
 
 .command-button.active.el-button {
@@ -122,7 +226,7 @@ h1 {
 }
 
 .hero-grid {
-  grid-template-columns: 330px 1fr 330px;
+  grid-template-columns: minmax(300px, 330px) minmax(420px, 1fr) minmax(300px, 330px);
 }
 
 .content-grid {
@@ -151,8 +255,110 @@ h1 {
   font-weight: 700;
 }
 
+.score-visual {
+  position: relative;
+  display: grid;
+  place-items: center;
+  height: 242px;
+  overflow: hidden;
+}
+
+.score-gauge,
 .score-chart {
-  height: 278px;
+  display: block;
+  width: 100%;
+  height: 242px;
+}
+
+.gauge-track,
+.gauge-energy {
+  fill: none;
+  stroke-linecap: round;
+  stroke-width: 13;
+}
+
+.gauge-face {
+  fill: rgba(3, 12, 22, 0.34);
+  filter: drop-shadow(0 20px 32px rgba(0, 0, 0, 0.42)) drop-shadow(0 0 28px rgba(35, 214, 176, 0.1));
+}
+
+.gauge-track {
+  stroke: rgba(36, 52, 71, 0.86);
+}
+
+.gauge-energy {
+  filter: url("#gaugeGlow");
+  transition: stroke-dasharray 0.18s ease, stroke 0.18s ease;
+}
+
+.gauge-ticks line {
+  stroke: rgba(153, 184, 208, 0.6);
+  stroke-linecap: round;
+  stroke-width: 1.45;
+}
+
+.gauge-minor-ticks line {
+  stroke: rgba(129, 170, 196, 0.42);
+  stroke-linecap: round;
+  stroke-width: 0.8;
+}
+
+.gauge-ticks text {
+  fill: rgba(244, 249, 255, 0.98);
+  font-size: 11.8px;
+  font-weight: 800;
+  text-anchor: middle;
+  dominant-baseline: middle;
+  paint-order: stroke;
+  stroke: rgba(4, 12, 21, 0.72);
+  stroke-width: 2.2px;
+}
+
+.gauge-pointer {
+  stroke: rgba(108, 137, 255, 0.72);
+  stroke-linecap: round;
+  stroke-width: 2.8;
+  filter: drop-shadow(0 2px 6px rgba(29, 82, 233, 0.42));
+  transition: x2 0.18s ease, y2 0.18s ease;
+}
+
+.gauge-pointer.active {
+  stroke: #6da4ff;
+}
+
+.gauge-needle {
+  fill: url("#gaugeNeedleGradient");
+  filter: drop-shadow(0 5px 10px rgba(21, 67, 221, 0.44));
+  transition: points 0.18s ease;
+}
+
+.gauge-hub {
+  fill: #6788ff;
+  stroke: rgba(213, 231, 255, 0.76);
+  stroke-width: 1.7;
+  filter: drop-shadow(0 0 8px rgba(64, 115, 255, 0.7));
+}
+
+.gauge-score-text {
+  pointer-events: none;
+  text-anchor: middle;
+  paint-order: stroke;
+  stroke: rgba(4, 12, 21, 0.72);
+  text-shadow: 0 4px 16px rgba(0, 0, 0, 0.8);
+}
+
+.gauge-score-value {
+  fill: #f7fbff;
+  font-size: 37px;
+  font-weight: 800;
+  stroke-width: 2.4px;
+}
+
+.gauge-score-label {
+  font-size: 11px;
+  font-weight: 800;
+  letter-spacing: 0;
+  stroke-width: 1.8px;
 }
 
 .trend-chart {
@@ -310,6 +516,77 @@ h1 {
   line-height: 1.45;
 }
 
+@media (max-width: 1120px) {
+  .app-shell {
+    padding: 18px;
+  }
+
+  .topbar {
+    align-items: flex-start;
+    flex-direction: column;
+  }
+
+  .actions {
+    width: 100%;
+    justify-content: flex-start;
+  }
+
+  .hero-grid,
+  .content-grid,
+  .disk-grid {
+    grid-template-columns: 1fr;
+  }
+
+  .score-visual,
+  .score-chart {
+    height: 260px;
+  }
+
+  .trend-chart {
+    height: 300px;
+  }
+}
+
+@media (max-width: 720px) {
+  .app-shell {
+    padding: 14px;
+  }
+
+  h1 {
+    font-size: 27px;
+  }
+
+  .panel {
+    padding: 14px;
+  }
+
+  .command-bar {
+    width: 100%;
+  }
+
+  .command-button.el-button {
+    min-width: 0;
+  }
+
+  .score-visual,
+  .score-chart {
+    height: 236px;
+  }
+
+  .resource-toolbar,
+  .projects-toolbar,
+  .disk-toolbar,
+  .history-toolbar {
+    align-items: flex-start;
+    flex-direction: column;
+  }
+
+  .resource-sort-select {
+    width: 100%;
+    margin-left: 0;
+  }
+}
+
 .suggestion-action span {
   flex: 0 0 auto;
   color: #f2b84b;
@@ -360,6 +637,7 @@ h1 {
   align-items: center;
   justify-content: space-between;
   gap: 14px;
+  min-width: 0;
   margin-bottom: 12px;
   color: #9eb1c6;
 }
@@ -377,6 +655,7 @@ h1 {
 .resource-sort-select {
   width: 138px;
   flex: 0 0 auto;
+  margin-left: auto;
 }
 
 .resource-sort-select.el-select {
@@ -385,6 +664,7 @@ h1 {
 
 .resource-sort-select .el-select__wrapper {
   min-height: 34px;
+  padding: 0 11px;
   border: 1px solid rgba(72, 169, 248, 0.32);
   border-radius: 8px;
   background:
@@ -499,6 +779,22 @@ h1 {
   display: inline-flex;
   align-items: center;
   gap: 5px;
+}
+
+.disk-toolbar .el-button.el-button--small {
+  border: 1px solid rgba(72, 169, 248, 0.34);
+  color: #d9e7f5;
+  background:
+    linear-gradient(180deg, rgba(21, 43, 59, 0.96), rgba(10, 20, 29, 0.94));
+  box-shadow: 0 0 0 1px rgba(36, 214, 165, 0.06) inset;
+}
+
+.disk-toolbar .el-button.el-button--small:hover,
+.disk-toolbar .el-button.el-button--small:focus {
+  border-color: rgba(36, 214, 165, 0.62);
+  color: #f8fcff;
+  background:
+    linear-gradient(180deg, rgba(26, 58, 74, 0.98), rgba(13, 30, 42, 0.98));
 }
 
 .disk-ghost-button.el-button,

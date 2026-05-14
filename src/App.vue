@@ -1,5 +1,5 @@
 <script setup>
-import { computed, onBeforeUnmount, onMounted, ref } from 'vue'
+import { computed, onBeforeUnmount, onMounted, ref, watch } from 'vue'
 import { ElMessage } from 'element-plus'
 import VChart from 'vue-echarts'
 import { use } from 'echarts/core'
@@ -36,6 +36,7 @@ const diskCheck = ref(null)
 const diskLoading = ref(false)
 const diskActionLoading = ref('')
 const diskPathOpening = ref(false)
+const reportDirOpening = ref(false)
 const diskLogs = ref([])
 const activeTab = ref('resources')
 const showSystemItems = ref(true)
@@ -51,9 +52,9 @@ const resourceSort = ref('impact')
 const startupItems = ref([])
 const startupLoading = ref(false)
 const togglingStartupId = ref('')
+const loadedTabs = ref({ background: false, projects: false, disk: false })
 let loadingGaugeFrame = null
-
-const wait = (ms) => new Promise((resolve) => window.setTimeout(resolve, ms))
+let settleGaugeFrame = null
 
 const formatBytes = (bytes) => {
   const value = Number(bytes || 0)
@@ -125,6 +126,107 @@ const localProjectRows = computed(() => sortedRows(localProjects.value))
 const stoppableProjects = computed(() => localProjectRows.value.filter((project) => !project.protected))
 const startupRows = computed(() => sortedRows(startupItems.value.map((item) => ({ ...item, protected: !item.manageable }))))
 const groupProcessRows = (group) => sortResourceRows(group?.processes || group?.topProcesses || [])
+const scoreDisplayValue = computed(() => {
+  const value = Number(loadingGaugeValue.value || 0)
+  return Number.isInteger(value) ? String(value) : value.toFixed(1)
+})
+const scoreDisplayLabel = computed(() => (loading.value ? '读取中' : snapshot.value?.analysis?.label || '等待读取'))
+
+const gaugeValue = computed(() => Math.max(0, Math.min(100, Number(loadingGaugeValue.value || 0))))
+const gaugeStatusLabel = computed(() => {
+  const score = gaugeValue.value
+  if (loading.value || scoreAnimating.value) return '读取中'
+  if (score >= 85) return '流畅'
+  if (score >= 70) return '良好'
+  if (score >= 50) return '关注'
+  return '卡顿'
+})
+const gaugeColor = computed(() => {
+  const score = gaugeValue.value
+  if (loading.value || scoreAnimating.value) return '#24d6a5'
+  if (score >= 85) return '#24d6a5'
+  if (score >= 70) return '#48d6c4'
+  if (score >= 50) return '#f2b84b'
+  return '#ff6275'
+})
+const gaugeStatusColor = computed(() => {
+  const score = gaugeValue.value
+  if (loading.value || scoreAnimating.value) return '#35f0ca'
+  if (score >= 85) return '#35f0ca'
+  if (score >= 70) return '#58d7ff'
+  if (score >= 50) return '#f2b84b'
+  return '#ff6275'
+})
+const gaugePointer = computed(() => {
+  const angle = Math.PI + (gaugeValue.value / 100) * Math.PI
+  const centerX = 130
+  const centerY = 118
+  const length = 62
+  return {
+    x1: centerX,
+    y1: centerY,
+    x2: Number((centerX + Math.cos(angle) * length).toFixed(2)),
+    y2: Number((centerY + Math.sin(angle) * length).toFixed(2))
+  }
+})
+const gaugeNeedle = computed(() => {
+  const angle = Math.PI + (gaugeValue.value / 100) * Math.PI
+  const centerX = 130
+  const centerY = 118
+  const tipLength = 66
+  const tailLength = 10
+  const halfWidth = 4.8
+  const tipX = centerX + Math.cos(angle) * tipLength
+  const tipY = centerY + Math.sin(angle) * tipLength
+  const tailX = centerX - Math.cos(angle) * tailLength
+  const tailY = centerY - Math.sin(angle) * tailLength
+  const perpX = Math.cos(angle + Math.PI / 2) * halfWidth
+  const perpY = Math.sin(angle + Math.PI / 2) * halfWidth
+
+  return [
+    `${tipX.toFixed(2)},${tipY.toFixed(2)}`,
+    `${(tailX + perpX).toFixed(2)},${(tailY + perpY).toFixed(2)}`,
+    `${(centerX - perpX * 0.5).toFixed(2)},${(centerY - perpY * 0.5).toFixed(2)}`,
+    `${(tailX - perpX).toFixed(2)},${(tailY - perpY).toFixed(2)}`
+  ].join(' ')
+})
+const gaugeMinorTicks = computed(() => {
+  const centerX = 130
+  const centerY = 124
+  return Array.from({ length: 41 }, (_, index) => index * 2.5)
+    .filter((value) => value % 20 !== 0)
+    .map((value) => {
+      const angle = Math.PI + (value / 100) * Math.PI
+      const tickOuter = value % 10 === 0 ? 94 : 91
+      const tickInner = value % 10 === 0 ? 85 : 87
+      return {
+        value,
+        x1: Number((centerX + Math.cos(angle) * tickOuter).toFixed(2)),
+        y1: Number((centerY + Math.sin(angle) * tickOuter).toFixed(2)),
+        x2: Number((centerX + Math.cos(angle) * tickInner).toFixed(2)),
+        y2: Number((centerY + Math.sin(angle) * tickInner).toFixed(2))
+      }
+    })
+})
+const gaugeTicks = computed(() => {
+  const centerX = 130
+  const centerY = 124
+  return [0, 20, 40, 60, 80, 100].map((value) => {
+    const angle = Math.PI + (value / 100) * Math.PI
+    const tickOuter = 97
+    const tickInner = 82
+    const labelRadius = 66
+    return {
+      value,
+      x1: Number((centerX + Math.cos(angle) * tickOuter).toFixed(2)),
+      y1: Number((centerY + Math.sin(angle) * tickOuter).toFixed(2)),
+      x2: Number((centerX + Math.cos(angle) * tickInner).toFixed(2)),
+      y2: Number((centerY + Math.sin(angle) * tickInner).toFixed(2)),
+      labelX: Number((centerX + Math.cos(angle) * labelRadius).toFixed(2)),
+      labelY: Number((centerY + Math.sin(angle) * labelRadius).toFixed(2))
+    }
+  })
+})
 
 const ensureTwoCompareIds = async () => {
   if (compareIds.value.length < 2 && history.value.length >= 2) {
@@ -264,6 +366,21 @@ const updateLocalProjectAlerts = async (value) => {
   }
 }
 
+const ensureTabData = (tabName) => {
+  if (tabName === 'background' && !loadedTabs.value.background) {
+    loadedTabs.value.background = true
+    loadStartupItems()
+  }
+  if (tabName === 'projects' && !loadedTabs.value.projects) {
+    loadedTabs.value.projects = true
+    loadLocalProjects()
+  }
+  if (tabName === 'disk' && !loadedTabs.value.disk) {
+    loadedTabs.value.disk = true
+    loadDiskCheck()
+  }
+}
+
 const checkForUpdates = async () => {
   if (!desktopApi.value?.checkForUpdates) {
     ElMessage.info('版本更新只在桌面应用中可用')
@@ -295,23 +412,28 @@ const downloadAndInstallUpdate = async () => {
 
 const startLoadingGauge = () => {
   stopLoadingGauge()
+  if (settleGaugeFrame) {
+    window.cancelAnimationFrame(settleGaugeFrame)
+    settleGaugeFrame = null
+  }
   scoreAnimating.value = true
-  const startValue = Math.max(18, Math.min(82, Number(snapshot.value?.analysis?.score ?? loadingGaugeValue.value ?? 52)))
+  const startValue = Math.max(22, Math.min(92, Number(loadingGaugeValue.value || snapshot.value?.analysis?.score || 52)))
   const startedAt = performance.now()
   let displayed = startValue
   const easeOutCubic = (value) => 1 - Math.pow(1 - value, 3)
   const easeInOut = (value) => (value < 0.5 ? 2 * value * value : 1 - Math.pow(-2 * value + 2, 2) / 2)
   const throttleSweep = (phase) => {
-    if (phase < 0.46) return 34 + easeOutCubic(phase / 0.46) * 58
-    if (phase < 0.74) return 92 - easeInOut((phase - 0.46) / 0.28) * 36
-    return 56 + easeOutCubic((phase - 0.74) / 0.26) * 30
+    if (phase < 0.34) return 38 + easeOutCubic(phase / 0.34) * 56
+    if (phase < 0.56) return 94 - easeInOut((phase - 0.34) / 0.22) * 28
+    if (phase < 0.84) return 66 + easeOutCubic((phase - 0.56) / 0.28) * 30
+    return 96 - easeInOut((phase - 0.84) / 0.16) * 14
   }
   const tick = (now) => {
     const elapsed = now - startedAt
-    const phase = (elapsed % 1550) / 1550
-    const target = throttleSweep(phase) + Math.sin(elapsed / 260) * 2.4
-    displayed += (target - displayed) * 0.18
-    loadingGaugeValue.value = Math.max(20, Math.min(96, Number(displayed.toFixed(1))))
+    const phase = (elapsed % 1350) / 1350
+    const target = throttleSweep(phase) + Math.sin(elapsed / 180) * 1.6
+    displayed += (target - displayed) * 0.22
+    loadingGaugeValue.value = Math.max(24, Math.min(98, Number(displayed.toFixed(1))))
     loadingGaugeFrame = window.requestAnimationFrame(tick)
   }
   loadingGaugeFrame = window.requestAnimationFrame(tick)
@@ -328,7 +450,7 @@ const settleGaugeToScore = (finalScore) =>
     stopLoadingGauge()
     const target = Number(finalScore || 0)
     const start = Number(loadingGaugeValue.value || 0)
-    const duration = 980
+    const duration = 720
     const startedAt = performance.now()
     const tick = (now) => {
       const progress = Math.min(1, (now - startedAt) / duration)
@@ -337,18 +459,18 @@ const settleGaugeToScore = (finalScore) =>
         : 1 - Math.pow(-2 * progress + 2, 3) / 2
       loadingGaugeValue.value = Math.max(0, Math.min(100, Number((start + (target - start) * eased).toFixed(1))))
       if (progress < 1) {
-        window.requestAnimationFrame(tick)
+        settleGaugeFrame = window.requestAnimationFrame(tick)
         return
       }
       loadingGaugeValue.value = target
       scoreAnimating.value = false
+      settleGaugeFrame = null
       resolve()
     }
-    window.requestAnimationFrame(tick)
+    settleGaugeFrame = window.requestAnimationFrame(tick)
   })
 
 const readStatus = async () => {
-  const startedAt = performance.now()
   loading.value = true
   startLoadingGauge()
   errorMessage.value = ''
@@ -356,8 +478,6 @@ const readStatus = async () => {
     const response = await fetch('/api/status')
     const data = await response.json()
     if (!response.ok) throw new Error(data.message || '读取状态失败')
-    await wait(Math.max(0, 900 - (performance.now() - startedAt)))
-    await settleGaugeToScore(data.analysis.score)
     snapshot.value = data
     trend.value = [
       ...trend.value,
@@ -368,6 +488,7 @@ const readStatus = async () => {
         score: data.analysis.score
       }
     ].slice(-12)
+    await settleGaugeToScore(data.analysis.score)
     loadHistory().then(async () => {
       compareIds.value = history.value.slice(0, 2).map((item) => item.id)
       await loadCompareSnapshots()
@@ -383,6 +504,8 @@ const readStatus = async () => {
 }
 
 const openReportDir = async () => {
+  if (reportDirOpening.value) return
+  reportDirOpening.value = true
   try {
     const response = await fetch('/api/open-report-dir')
     const result = await response.json()
@@ -390,6 +513,10 @@ const openReportDir = async () => {
     ElMessage.success(`已打开报告目录：${result.path}`)
   } catch (error) {
     ElMessage.error(error.message)
+  } finally {
+    window.setTimeout(() => {
+      reportDirOpening.value = false
+    }, 900)
   }
 }
 
@@ -579,13 +706,14 @@ const scoreOption = computed(() => {
         type: 'gauge',
         min: 0,
         max: 100,
-        radius: '92%',
+        radius: '74%',
+        center: ['50%', '54%'],
         animation: false,
         animationDurationUpdate: 0,
         animationEasingUpdate: 'linear',
         progress: {
           show: true,
-          width: 16,
+          width: 13,
           roundCap: true,
           itemStyle: {
             color: loading.value || scoreAnimating.value
@@ -595,17 +723,17 @@ const scoreOption = computed(() => {
             shadowColor: loading.value ? 'rgba(36, 214, 165, 0.5)' : 'rgba(36, 214, 165, 0.24)'
           }
         },
-        axisLine: { lineStyle: { width: 16, color: [[1, '#263647']] } },
+        axisLine: { lineStyle: { width: 13, color: [[1, '#263647']] } },
         axisTick: { show: false },
-        splitLine: { distance: -22, length: 8, lineStyle: { color: '#607080' } },
-        axisLabel: { color: '#9eb1c6', distance: 24 },
+        splitLine: { distance: -13, length: 6, lineStyle: { color: '#607080' } },
+        axisLabel: { show: false },
         pointer: {
           width: loading.value ? 6 : 5,
           itemStyle: { color: loading.value ? '#6da4ff' : '#5c7df0' }
         },
-        detail: { valueAnimation: false, formatter: '{value}', color: '#f6fbff', fontSize: 42, offsetCenter: [0, '32%'] },
-        title: { color: '#9eb1c6', fontSize: 14, offsetCenter: [0, '58%'] },
-        data: [{ value: score, name: label }]
+        detail: { show: false },
+        title: { show: false },
+        data: [{ value: score }]
       }
     ]
   }
@@ -743,17 +871,19 @@ onMounted(async () => {
   await Promise.all([loadHistory(), loadDesktopSettings()])
   desktopApi.value?.onNavigateTab?.((tabName) => {
     activeTab.value = tabName
-    if (tabName === 'projects') loadLocalProjects()
   })
   await restoreLatestSnapshot()
   await ensureTwoCompareIds()
-  loadStartupItems()
-  loadLocalProjects()
-  loadDiskCheck()
+  ensureTabData(activeTab.value)
+})
+
+watch(activeTab, (tabName) => {
+  ensureTabData(tabName)
 })
 
 onBeforeUnmount(() => {
   stopLoadingGauge()
+  if (settleGaugeFrame) window.cancelAnimationFrame(settleGaugeFrame)
 })
 </script>
 
@@ -766,10 +896,11 @@ onBeforeUnmount(() => {
       </section>
       <nav class="actions command-bar">
         <el-button class="command-button command-primary" :loading="loading" @click="readStatus">
-          <Activity :size="17" />
-          读取状态
+          <Activity class="command-primary-icon" :size="18" />
+          <span class="command-primary-label">读取状态</span>
+          <span class="command-flow-dots" aria-hidden="true"></span>
         </el-button>
-        <el-button class="command-button" @click="openReportDir">
+        <el-button class="command-button" :loading="reportDirOpening" :disabled="reportDirOpening" @click="openReportDir">
           <FolderOpen :size="17" />
           打开报告目录
         </el-button>
@@ -836,7 +967,68 @@ onBeforeUnmount(() => {
           <Gauge :size="18" />
           当前流畅评分
         </div>
-        <VChart class="score-chart" :option="scoreOption" autoresize />
+        <div class="score-visual">
+          <svg class="score-gauge" viewBox="0 0 260 174" role="img" aria-label="当前流畅评分仪表盘">
+            <defs>
+              <linearGradient id="gaugeEnergyGradient" x1="27" y1="128" x2="233" y2="128" gradientUnits="userSpaceOnUse">
+                <stop offset="0%" stop-color="#24d6a5" />
+                <stop offset="52%" stop-color="#2fe4bc" />
+                <stop offset="100%" stop-color="#35f0ca" />
+              </linearGradient>
+              <linearGradient id="gaugeNeedleGradient" x1="114" y1="118" x2="198" y2="118" gradientUnits="userSpaceOnUse">
+                <stop offset="0%" stop-color="#315bd9" stop-opacity="0.72" />
+                <stop offset="64%" stop-color="#5f80ff" stop-opacity="0.96" />
+                <stop offset="100%" stop-color="#88a8ff" stop-opacity="0.92" />
+              </linearGradient>
+              <filter id="gaugeGlow" x="-30%" y="-30%" width="160%" height="160%">
+                <feGaussianBlur stdDeviation="4" result="blur" />
+                <feMerge>
+                  <feMergeNode in="blur" />
+                  <feMergeNode in="SourceGraphic" />
+                </feMerge>
+              </filter>
+            </defs>
+            <circle class="gauge-face" cx="130" cy="124" r="78" />
+            <path class="gauge-track" d="M 27 128 A 103 103 0 0 1 233 128" pathLength="100" />
+            <path
+              class="gauge-energy"
+              d="M 27 128 A 103 103 0 0 1 233 128"
+              pathLength="100"
+              :stroke="loading || scoreAnimating || gaugeValue >= 70 ? 'url(#gaugeEnergyGradient)' : gaugeColor"
+              :stroke-dasharray="`${gaugeValue} 100`"
+            />
+            <g class="gauge-minor-ticks">
+              <line
+                v-for="tick in gaugeMinorTicks"
+                :key="tick.value"
+                :x1="tick.x1"
+                :y1="tick.y1"
+                :x2="tick.x2"
+                :y2="tick.y2"
+              />
+            </g>
+            <g class="gauge-ticks">
+              <g v-for="tick in gaugeTicks" :key="tick.value">
+                <line :x1="tick.x1" :y1="tick.y1" :x2="tick.x2" :y2="tick.y2" />
+                <text :x="tick.labelX" :y="tick.labelY">{{ tick.value }}</text>
+              </g>
+            </g>
+            <polygon class="gauge-needle" :points="gaugeNeedle" />
+            <circle class="gauge-hub" cx="130" cy="118" r="5" />
+            <line
+              class="gauge-pointer"
+              :class="{ active: loading || scoreAnimating }"
+              :x1="gaugePointer.x1"
+              :y1="gaugePointer.y1"
+              :x2="gaugePointer.x2"
+              :y2="gaugePointer.y2"
+            />
+            <g class="gauge-score-text">
+              <text class="gauge-score-value" x="130" y="105">{{ scoreDisplayValue }}</text>
+              <text class="gauge-score-label" x="130" y="142" :fill="gaugeStatusColor">{{ gaugeStatusLabel }}</text>
+            </g>
+          </svg>
+        </div>
         <div class="timestamp">最近采样：{{ formatTime(snapshot?.capturedAt) }}</div>
       </article>
 

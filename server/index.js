@@ -23,6 +23,17 @@ const movedRoot = 'D:\\MovedFromC'
 const app = express()
 app.use(express.json())
 
+const STATUS_PROCESS_TOP = 60
+const STATIC_METADATA_TTL_MS = 5 * 60 * 1000
+const metadataCache = {
+  startupItems: [],
+  services: [],
+  refreshedAt: 0,
+  status: 'warming',
+  error: '',
+  promise: null
+}
+
 const SYSTEM_NAMES = new Set([
   'system',
   'registry',
@@ -1535,7 +1546,23 @@ function friendlyProcessError(error) {
   return '停止失败，已跳过。'
 }
 
-function enrich(raw) {
+function metadataStatus() {
+  if (metadataCache.promise && !metadataCache.refreshedAt) return 'warming'
+  if (!metadataCache.refreshedAt) return 'warming'
+  return Date.now() - metadataCache.refreshedAt > STATIC_METADATA_TTL_MS ? 'stale' : 'ready'
+}
+
+function usableMetadata() {
+  return {
+    startupItems: metadataCache.startupItems,
+    services: metadataCache.services,
+    status: metadataStatus(),
+    refreshedAt: metadataCache.refreshedAt ? new Date(metadataCache.refreshedAt).toISOString() : null,
+    error: metadataCache.error
+  }
+}
+
+function enrich(raw, options = {}) {
   const startupItems = toArray(raw.startupItems)
   const services = toArray(raw.services)
   const processes = toArray(raw.processes).map((p) => {
@@ -1552,7 +1579,9 @@ function enrich(raw) {
     background: processes
       .filter((p) => p.tags.includes('后台自启') || p.tags.includes('后台服务') || p.tags.includes('值得关注'))
       .sort((a, b) => b.cpuPercent - a.cpuPercent || b.workingSet - a.workingSet)
-      .slice(0, 30)
+      .slice(0, 30),
+    metadataStatus: options.metadataStatus || metadataStatus(),
+    metadataRefreshedAt: options.metadataRefreshedAt || null
   }
   enriched.analysis = scoreSnapshot(enriched)
   enriched.suggestions = buildSuggestions(enriched)
@@ -1563,7 +1592,19 @@ function runCollector() {
   return new Promise((resolve, reject) => {
     execFile(
       powershellExe,
-      ['-NoProfile', '-ExecutionPolicy', 'Bypass', '-File', scriptPath, '-IntervalSeconds', '1', '-Top', '30'],
+      [
+        '-NoProfile',
+        '-ExecutionPolicy',
+        'Bypass',
+        '-File',
+        scriptPath,
+        '-Mode',
+        'Fast',
+        '-IntervalSeconds',
+        '1',
+        '-Top',
+        String(STATUS_PROCESS_TOP)
+      ],
       { cwd: processCwd, windowsHide: true, maxBuffer: 16 * 1024 * 1024 },
       (error, stdout, stderr) => {
         if (error) {
@@ -1578,6 +1619,54 @@ function runCollector() {
       }
     )
   })
+}
+
+function runMetadataCollector() {
+  return new Promise((resolve, reject) => {
+    execFile(
+      powershellExe,
+      ['-NoProfile', '-ExecutionPolicy', 'Bypass', '-File', scriptPath, '-Mode', 'Metadata'],
+      { cwd: processCwd, windowsHide: true, maxBuffer: 8 * 1024 * 1024 },
+      (error, stdout, stderr) => {
+        if (error) {
+          reject(new Error(stderr || error.message))
+          return
+        }
+        try {
+          resolve(JSON.parse(stdout))
+        } catch (parseError) {
+          reject(new Error(`PowerShell metadata parse failed: ${parseError.message}`))
+        }
+      }
+    )
+  })
+}
+
+function refreshMetadata({ force = false } = {}) {
+  if (metadataCache.promise) return metadataCache.promise
+  if (!force && metadataCache.refreshedAt && Date.now() - metadataCache.refreshedAt < STATIC_METADATA_TTL_MS) {
+    return Promise.resolve(usableMetadata())
+  }
+
+  metadataCache.status = metadataCache.refreshedAt ? 'stale' : 'warming'
+  metadataCache.promise = runMetadataCollector()
+    .then((raw) => {
+      metadataCache.startupItems = toArray(raw.startupItems)
+      metadataCache.services = toArray(raw.services)
+      metadataCache.refreshedAt = Date.now()
+      metadataCache.status = 'ready'
+      metadataCache.error = ''
+      return usableMetadata()
+    })
+    .catch((error) => {
+      metadataCache.status = metadataCache.refreshedAt ? 'stale' : 'warming'
+      metadataCache.error = error.message
+      return usableMetadata()
+    })
+    .finally(() => {
+      metadataCache.promise = null
+    })
+  return metadataCache.promise
 }
 
 async function saveSnapshot(snapshot) {
@@ -1644,11 +1733,32 @@ async function readOldLogs() {
 }
 
 app.get('/api/status', async (_req, res) => {
+  const totalStarted = Date.now()
+  const timing = {}
   try {
+    refreshMetadata().catch(() => {})
+
+    const collectorStarted = Date.now()
     const raw = await runCollector()
-    const snapshot = enrich(raw)
+    timing.collectorMs = Date.now() - collectorStarted
+
+    const metadata = usableMetadata()
+    const enrichStarted = Date.now()
+    const snapshot = enrich(
+      {
+        ...raw,
+        startupItems: metadata.startupItems,
+        services: metadata.services
+      },
+      { metadataStatus: metadata.status, metadataRefreshedAt: metadata.refreshedAt }
+    )
+    timing.enrichMs = Date.now() - enrichStarted
+
+    const saveStarted = Date.now()
     const fileName = await saveSnapshot(snapshot)
-    res.json({ ...snapshot, fileName })
+    timing.saveMs = Date.now() - saveStarted
+    timing.totalMs = Date.now() - totalStarted
+    res.json({ ...snapshot, fileName, timing })
   } catch (error) {
     res.status(500).json({ message: error.message })
   }
@@ -1883,6 +1993,7 @@ const server = app.listen(port, '127.0.0.1', () => {
   const address = server.address()
   const actualPort = typeof address === 'object' && address ? address.port : port
   console.log(`WinStatusInsight API listening on http://127.0.0.1:${actualPort}`)
+  refreshMetadata({ force: true }).catch(() => {})
 })
 
 export { app, server, port }
