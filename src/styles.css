@@ -259,7 +259,7 @@ h1 {
   position: relative;
   display: grid;
   place-items: center;
-  height: 242px;
+  height: 204px;
   overflow: hidden;
 }
 
@@ -267,7 +267,7 @@ h1 {
 .score-chart {
   display: block;
   width: 100%;
-  height: 242px;
+  height: 204px;
 }
 
 .gauge-track,
@@ -362,7 +362,27 @@ h1 {
 }
 
 .trend-chart {
-  height: 312px;
+  height: 262px;
+}
+
+.score-panel {
+  min-height: 0;
+}
+
+.score-panel .timestamp {
+  margin-top: -3px;
+}
+
+.trend-panel {
+  min-height: 0;
+}
+
+.side-panel {
+  display: flex;
+  flex-direction: column;
+  max-height: 334px;
+  min-height: 0;
+  overflow: hidden;
 }
 
 .memory-chart {
@@ -380,6 +400,11 @@ h1 {
   display: grid;
   gap: 10px;
   margin: 22px 0;
+}
+
+.metric-list.compact {
+  gap: 10px;
+  margin: 14px 0 12px;
 }
 
 .metric {
@@ -411,6 +436,12 @@ h1 {
   display: grid;
   gap: 8px;
   margin-top: 14px;
+  padding-right: 3px;
+  overflow: auto;
+}
+
+.side-panel .impact-list {
+  max-height: 148px;
 }
 
 .impact-row {
@@ -418,8 +449,8 @@ h1 {
   align-items: center;
   justify-content: space-between;
   gap: 12px;
-  min-height: 48px;
-  padding: 9px 11px;
+  min-height: 44px;
+  padding: 8px 11px;
   border: 1px solid rgba(145, 176, 205, 0.2);
   border-radius: 8px;
   background: #101b26;
@@ -539,11 +570,15 @@ h1 {
 
   .score-visual,
   .score-chart {
-    height: 260px;
+    height: 224px;
   }
 
   .trend-chart {
-    height: 300px;
+    height: 266px;
+  }
+
+  .side-panel {
+    max-height: none;
   }
 }
 
@@ -570,7 +605,11 @@ h1 {
 
   .score-visual,
   .score-chart {
-    height: 236px;
+    height: 214px;
+  }
+
+  .trend-chart {
+    height: 248px;
   }
 
   .resource-toolbar,
@@ -850,6 +889,22 @@ h1 {
   color: #9eb1c6;
   font-size: 13px;
   line-height: 1.45;
+}
+
+.settings-row .update-status-text {
+  color: #c8d9e8;
+}
+
+.update-progress {
+  width: min(280px, 100%);
+}
+
+.update-progress .el-progress-bar__outer {
+  background-color: rgba(36, 52, 71, 0.9);
+}
+
+.update-progress .el-progress-bar__inner {
+  background: linear-gradient(90deg, #24d6a5, #48a9f8);
 }
 
 .settings-actions {

@@ -48,6 +48,8 @@ const desktopSettingsLoading = ref(false)
 const updateChecking = ref(false)
 const updateInstalling = ref(false)
 const updateInfo = ref(null)
+const updateStatus = ref('')
+const updateProgress = ref(null)
 const resourceSort = ref('impact')
 const startupItems = ref([])
 const startupLoading = ref(false)
@@ -55,6 +57,7 @@ const togglingStartupId = ref('')
 const loadedTabs = ref({ background: false, projects: false, disk: false })
 let loadingGaugeFrame = null
 let settleGaugeFrame = null
+let removeUpdateStatusListener = null
 
 const formatBytes = (bytes) => {
   const value = Number(bytes || 0)
@@ -99,6 +102,14 @@ const diskMigrationItems = computed(() => (diskCheck.value?.items || []).filter(
 const diskCleanItems = computed(() => (diskCheck.value?.items || []).filter((item) => item.type === 'clean'))
 const diskAppItems = computed(() => (diskCheck.value?.items || []).filter((item) => item.type === 'app-cache'))
 const desktopApi = computed(() => window.winStatusInsight || null)
+const updateProgressPercent = computed(() => Math.max(0, Math.min(100, Number(updateProgress.value?.percent || 0))))
+const updateProgressText = computed(() => {
+  if (!updateProgress.value) return ''
+  const percent = Math.round(updateProgressPercent.value)
+  const total = updateProgress.value.total ? formatBytes(updateProgress.value.total) : ''
+  const speed = updateProgress.value.bytesPerSecond ? `${formatBytes(updateProgress.value.bytesPerSecond)}/s` : ''
+  return [percent ? `${percent}%` : '', total, speed].filter(Boolean).join(' · ')
+})
 
 const isProtectedRow = (row = {}) =>
   row.cleanupAllowed === false || row.system === true || row.protected === true || row.protectedSystem === true
@@ -387,10 +398,14 @@ const checkForUpdates = async () => {
     return
   }
   updateChecking.value = true
+  updateStatus.value = '正在检查新版本...'
+  updateProgress.value = null
   try {
     updateInfo.value = await desktopApi.value.checkForUpdates()
-    ElMessage.success(updateInfo.value.hasUpdate ? `发现新版本 ${updateInfo.value.latestVersion}` : '已是最新版本')
+    updateStatus.value = updateInfo.value.message || (updateInfo.value.hasUpdate ? `发现新版本 ${updateInfo.value.latestVersion}` : '已是最新版本')
+    ElMessage.success(updateStatus.value)
   } catch (error) {
+    updateStatus.value = error.message
     ElMessage.error(error.message)
   } finally {
     updateChecking.value = false
@@ -400,13 +415,49 @@ const checkForUpdates = async () => {
 const downloadAndInstallUpdate = async () => {
   if (!desktopApi.value?.downloadAndInstallUpdate) return
   updateInstalling.value = true
+  updateStatus.value = '正在准备下载更新，下载完成后会自动重启安装。'
+  updateProgress.value = null
   try {
     const result = await desktopApi.value.downloadAndInstallUpdate()
-    ElMessage.success(result.message || '安装程序已启动')
+    updateStatus.value = result.message || '更新正在下载，完成后将自动重启安装。'
+    ElMessage.success(updateStatus.value)
   } catch (error) {
+    updateStatus.value = error.message
     ElMessage.error(error.message)
-  } finally {
+  }
+}
+
+const handleUpdateStatus = (payload = {}) => {
+  if (payload.info) {
+    const hasUpdate = payload.type === 'available'
+      ? true
+      : payload.type === 'not-available'
+        ? false
+        : Boolean(updateInfo.value?.hasUpdate)
+    updateInfo.value = { ...updateInfo.value, ...payload.info, hasUpdate }
+  }
+  if (payload.message) updateStatus.value = payload.message
+  if (payload.progress) updateProgress.value = payload.progress
+  if (payload.type === 'available') {
     updateInstalling.value = false
+    updateChecking.value = false
+  }
+  if (payload.type === 'not-available') {
+    updateInstalling.value = false
+    updateChecking.value = false
+    updateProgress.value = null
+  }
+  if (payload.type === 'download-started' || payload.type === 'progress') {
+    updateInstalling.value = true
+  }
+  if (payload.type === 'downloaded') {
+    updateInstalling.value = true
+    updateProgress.value = { ...(updateProgress.value || {}), percent: 100 }
+  }
+  if (payload.type === 'error') {
+    updateInstalling.value = false
+    updateChecking.value = false
+    ElMessage.error(payload.message || '更新失败')
   }
 }
 
@@ -742,7 +793,7 @@ const scoreOption = computed(() => {
 const trendOption = computed(() => ({
   tooltip: { trigger: 'axis' },
   legend: { textStyle: { color: '#a8b9ca' }, top: 0 },
-  grid: { left: 36, right: 18, top: 44, bottom: 28 },
+  grid: { left: 36, right: 18, top: 40, bottom: 16 },
   xAxis: { type: 'category', data: trend.value.map((item) => item.time), axisLabel: { color: '#8ca1b5' } },
   yAxis: { type: 'value', min: 0, max: 100, axisLabel: { color: '#8ca1b5' }, splitLine: { lineStyle: { color: '#243648' } } },
   series: [
@@ -869,6 +920,7 @@ const compareAnalysis = computed(() => {
 
 onMounted(async () => {
   await Promise.all([loadHistory(), loadDesktopSettings()])
+  removeUpdateStatusListener = desktopApi.value?.onUpdateStatus?.(handleUpdateStatus) || null
   desktopApi.value?.onNavigateTab?.((tabName) => {
     activeTab.value = tabName
   })
@@ -884,6 +936,7 @@ watch(activeTab, (tabName) => {
 onBeforeUnmount(() => {
   stopLoadingGauge()
   if (settleGaugeFrame) window.cancelAnimationFrame(settleGaugeFrame)
+  if (removeUpdateStatusListener) removeUpdateStatusListener()
 })
 </script>
 
@@ -939,9 +992,18 @@ onBeforeUnmount(() => {
             <strong>检查版本更新</strong>
             <span v-if="updateInfo">
               当前 {{ updateInfo.currentVersion }}，最新 {{ updateInfo.latestVersion }}。
-              {{ updateInfo.hasUpdate ? '可下载安装新版。' : '已是最新版本。' }}
+              {{ updateInfo.hasUpdate ? '点击“下载并自动安装”后，完成下载会自动重启应用安装。' : '已是最新版本。' }}
             </span>
-            <span v-else>手动联网检查 GitHub Release，发现新版后可静默下载安装。</span>
+            <span v-else>手动联网检查 GitHub Release；发现新版后使用差量更新，下载完成自动重启安装。</span>
+            <span v-if="updateStatus" class="update-status-text">{{ updateStatus }}</span>
+            <el-progress
+              v-if="updateProgress"
+              class="update-progress"
+              :percentage="updateProgressPercent"
+              :show-text="false"
+              :stroke-width="8"
+            />
+            <span v-if="updateProgressText" class="update-status-text">{{ updateProgressText }}</span>
           </div>
           <div class="settings-actions">
             <el-button class="settings-button" size="small" :loading="updateChecking" @click="checkForUpdates">检查</el-button>
@@ -952,7 +1014,7 @@ onBeforeUnmount(() => {
               :loading="updateInstalling"
               @click="downloadAndInstallUpdate"
             >
-              下载安装
+              下载并自动安装
             </el-button>
           </div>
         </div>

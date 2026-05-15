@@ -5,6 +5,11 @@ contextBridge.exposeInMainWorld('winStatusInsight', {
   updateSettings: (settings) => ipcRenderer.invoke('settings:update', settings),
   checkForUpdates: () => ipcRenderer.invoke('updates:check'),
   downloadAndInstallUpdate: () => ipcRenderer.invoke('updates:download-install'),
+  onUpdateStatus: (callback) => {
+    const handler = (_event, payload) => callback(payload)
+    ipcRenderer.on('update-status', handler)
+    return () => ipcRenderer.removeListener('update-status', handler)
+  },
   openLocalProjectsFromTray: () => ipcRenderer.invoke('projects:open-local'),
   stopStoppableProjectsFromTray: () => ipcRenderer.invoke('projects:stop-stoppable'),
   onNavigateTab: (callback) => {

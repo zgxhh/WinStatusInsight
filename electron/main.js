@@ -1,9 +1,7 @@
 import { app, BrowserWindow, Menu, Tray, ipcMain, shell, Notification } from 'electron'
 import path from 'node:path'
-import { existsSync, mkdirSync, readFileSync, writeFileSync, createWriteStream } from 'node:fs'
-import { spawn } from 'node:child_process'
-import { Readable } from 'node:stream'
-import { pipeline } from 'node:stream/promises'
+import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs'
+import { autoUpdater } from 'electron-updater'
 
 let mainWindow = null
 let loadingWindow = null
@@ -14,6 +12,8 @@ let appSettings = { closeToTray: false, localProjectAlertsEnabled: true, lastPro
 let localServerUrl = ''
 let projectAlertTimer = null
 let lastProjectAlertSignature = ''
+let cachedUpdateInfo = null
+let updateDownloading = false
 
 function settingsPath() {
   return path.join(app.getPath('userData'), 'settings.json')
@@ -381,62 +381,106 @@ async function createWindow() {
 
 app.setAppUserModelId('cn.zgxhh.winstatusinsight')
 
-function compareVersions(a, b) {
-  const left = String(a || '0').replace(/^v/i, '').split('.').map((item) => Number(item) || 0)
-  const right = String(b || '0').replace(/^v/i, '').split('.').map((item) => Number(item) || 0)
-  for (let index = 0; index < Math.max(left.length, right.length); index += 1) {
-    if ((left[index] || 0) > (right[index] || 0)) return 1
-    if ((left[index] || 0) < (right[index] || 0)) return -1
+function normalizeUpdateInfo(info = {}) {
+  return {
+    currentVersion: app.getVersion(),
+    latestVersion: info.version || app.getVersion(),
+    releaseDate: info.releaseDate || '',
+    releaseName: info.releaseName || '',
+    notes: Array.isArray(info.releaseNotes)
+      ? info.releaseNotes.map((item) => item.note || item).join('\n')
+      : String(info.releaseNotes || ''),
+    files: info.files || []
   }
-  return 0
+}
+
+function hasNewerVersion(info = {}) {
+  return Boolean(info.latestVersion && info.latestVersion !== info.currentVersion)
+}
+
+function sendUpdateStatus(payload) {
+  mainWindow?.webContents.send('update-status', payload)
+}
+
+function setupAutoUpdater() {
+  autoUpdater.autoDownload = false
+  autoUpdater.autoInstallOnAppQuit = false
+  autoUpdater.allowDowngrade = false
+
+  autoUpdater.on('checking-for-update', () => {
+    sendUpdateStatus({ type: 'checking', message: '正在检查新版本...' })
+  })
+
+  autoUpdater.on('update-available', (info) => {
+    cachedUpdateInfo = normalizeUpdateInfo(info)
+    sendUpdateStatus({ type: 'available', info: cachedUpdateInfo, message: `发现新版本 ${cachedUpdateInfo.latestVersion}` })
+  })
+
+  autoUpdater.on('update-not-available', (info) => {
+    cachedUpdateInfo = normalizeUpdateInfo(info)
+    sendUpdateStatus({ type: 'not-available', info: cachedUpdateInfo, message: '当前已是最新版本' })
+  })
+
+  autoUpdater.on('download-progress', (progress) => {
+    sendUpdateStatus({
+      type: 'progress',
+      progress: {
+        percent: Number(progress.percent || 0),
+        transferred: progress.transferred || 0,
+        total: progress.total || 0,
+        bytesPerSecond: progress.bytesPerSecond || 0
+      },
+      message: `正在下载更新 ${Math.round(progress.percent || 0)}%`
+    })
+  })
+
+  autoUpdater.on('update-downloaded', (info) => {
+    updateDownloading = false
+    const normalized = normalizeUpdateInfo(info)
+    sendUpdateStatus({ type: 'downloaded', info: normalized, message: '下载完成，正在重启安装...' })
+    setTimeout(() => {
+      isQuitting = true
+      autoUpdater.quitAndInstall(false, true)
+    }, 900)
+  })
+
+  autoUpdater.on('error', (error) => {
+    updateDownloading = false
+    sendUpdateStatus({ type: 'error', message: error.message || '更新失败，请稍后重试。' })
+  })
 }
 
 async function checkForUpdates() {
-  const response = await fetch('https://api.github.com/repos/zgxhh/WinStatusInsight/releases/latest', {
-    headers: { 'User-Agent': 'WinStatusInsight', Accept: 'application/vnd.github+json' }
-  })
-  if (!response.ok) throw new Error('检查更新失败，请稍后重试。')
-  const release = await response.json()
-  const latestVersion = String(release.tag_name || release.name || '').replace(/^v/i, '')
-  const currentVersion = app.getVersion()
-  const asset = (release.assets || []).find((item) => /^WinStatusInsight-Setup-.*\.exe$/i.test(item.name))
   saveSettings({ lastUpdateCheckAt: Date.now() })
+  if (!app.isPackaged) {
+    const info = { currentVersion: app.getVersion(), latestVersion: app.getVersion() }
+    cachedUpdateInfo = info
+    return {
+      ...info,
+      hasUpdate: false,
+      message: '更新检查仅在安装版中可用；开发环境不会访问 GitHub 更新源。'
+    }
+  }
+
+  const result = await autoUpdater.checkForUpdates()
+  const info = normalizeUpdateInfo(result?.updateInfo)
+  cachedUpdateInfo = info
   return {
-    currentVersion,
-    latestVersion,
-    hasUpdate: compareVersions(currentVersion, latestVersion) < 0,
-    releaseUrl: release.html_url,
-    notes: release.body || '',
-    assetName: asset?.name || '',
-    assetUrl: asset?.browser_download_url || ''
+    ...info,
+    hasUpdate: hasNewerVersion(info),
+    message: hasNewerVersion(info) ? `发现新版本 ${info.latestVersion}` : '当前已是最新版本'
   }
 }
 
 async function downloadAndInstallUpdate() {
-  const info = await checkForUpdates()
-  if (!info.hasUpdate) return { ok: true, message: '当前已是最新版本。', info }
-  if (!info.assetUrl) {
-    if (info.releaseUrl) shell.openExternal(info.releaseUrl)
-    throw new Error('未找到安装版下载包，已打开 Release 页面。')
+  if (!app.isPackaged) {
+    return { ok: false, message: '下载并自动安装仅在安装版中可用。' }
   }
-
-  const updatesDir = path.join(app.getPath('userData'), 'updates')
-  mkdirSync(updatesDir, { recursive: true })
-  const installerPath = path.join(updatesDir, info.assetName || `WinStatusInsight-Setup-${info.latestVersion}.exe`)
-  const response = await fetch(info.assetUrl, { headers: { 'User-Agent': 'WinStatusInsight' } })
-  if (!response.ok || !response.body) throw new Error('下载新版安装包失败。')
-  await pipeline(Readable.fromWeb(response.body), createWriteStream(installerPath))
-
-  try {
-    const child = spawn(installerPath, ['/S'], { detached: true, stdio: 'ignore' })
-    child.unref()
-    isQuitting = true
-    setTimeout(() => app.quit(), 600)
-    return { ok: true, message: '新版安装程序已在后台启动，应用即将退出。', installerPath }
-  } catch (error) {
-    shell.showItemInFolder(installerPath)
-    throw new Error(`静默安装启动失败：${error.message}`)
-  }
+  if (updateDownloading) return { ok: true, message: '更新正在下载中，请稍候。' }
+  updateDownloading = true
+  sendUpdateStatus({ type: 'download-started', info: cachedUpdateInfo, message: '开始下载更新，完成后将自动重启安装。' })
+  await autoUpdater.downloadUpdate()
+  return { ok: true, message: '更新正在下载，完成后将自动重启安装。' }
 }
 
 ipcMain.handle('settings:get', () => appSettings)
@@ -475,6 +519,7 @@ if (!gotSingleInstanceLock) {
 
   app.whenReady().then(() => {
     loadSettings()
+    setupAutoUpdater()
     if (appSettings.closeToTray || appSettings.localProjectAlertsEnabled) ensureTray()
     return createWindow().then(() => {
       if (appSettings.localProjectAlertsEnabled) startProjectAlertTimer()

@@ -90,6 +90,7 @@ WinStatusInsight 是一款面向 Windows 桌面环境的本地状态分析工具
 - Electron 桌面应用，内置 Express 本地服务和 PowerShell 采集脚本。
 - 打包版使用随机本地端口，避免和开发服务端口冲突。
 - 支持应用图标、关闭时最小化到系统托盘、手动检查版本更新。
+- 版本更新使用 `electron-updater`：用户手动检查更新，点击“下载并自动安装”后优先差量下载，下载完成自动重启并安装新版。
 - 快照数据写入 Electron 用户数据目录，不写入安装目录或 exe 内部。
 - 主界面采用深色科技风格，读取状态按钮和流畅评分表盘针对桌面观感做了强化。
 
@@ -139,6 +140,16 @@ npm run package:win:installer
 ```text
 release/WinStatusInsight-Setup-2.1.0.exe
 ```
+
+正式发布给应用内更新使用时，GitHub Release 需要同时上传：
+
+```text
+release/WinStatusInsight-Setup-2.1.0.exe
+release/WinStatusInsight-Setup-2.1.0.exe.blockmap
+release/latest.yml
+```
+
+`latest.yml` 是更新入口，`.blockmap` 用于差量下载；如果只上传安装包，浏览器下载可用，但应用内更新不可用或无法差量更新。
 
 ## 数据与权限
 
