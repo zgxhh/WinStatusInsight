@@ -323,7 +323,7 @@ function createLoadingWindow() {
     webPreferences: {
       contextIsolation: true,
       nodeIntegration: false,
-      preload: path.join(app.getAppPath(), 'electron', 'preload.js')
+      preload: path.join(app.getAppPath(), 'electron', 'preload.cjs')
     }
   })
   loadingWindow.loadURL(loadingHtml())
@@ -352,7 +352,7 @@ async function createWindow() {
     webPreferences: {
       contextIsolation: true,
       nodeIntegration: false,
-      preload: path.join(app.getAppPath(), 'electron', 'preload.js')
+      preload: path.join(app.getAppPath(), 'electron', 'preload.cjs')
     }
   })
 

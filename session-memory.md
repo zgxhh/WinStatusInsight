@@ -45,6 +45,7 @@ latest.yml
 
 - `2.1.1` 曾因 `electron-updater` CommonJS/ESM 导入方式错误导致安装版主进程崩溃，错误为 `Named export 'autoUpdater' not found`。
 - 修复方式是使用默认导入再解构：`import updater from 'electron-updater'; const { autoUpdater } = updater`。
+- `2.1.2` 曾出现安装版能启动但 `window.winStatusInsight` 不存在的问题，导致设置里的检查更新无法走桌面 API；preload 必须使用 CommonJS `.cjs`，不要用 ESM `.js`。
 - 以后改动 Electron 主进程依赖、`electron/main.js`、`electron/preload.js` 或打包配置后，必须做 GitHub 下载包本机安装验收。
 
 ## 踩坑点沉淀规则

@@ -171,6 +171,34 @@ Named export 'autoUpdater' not found
 
 以后只要改动 Electron 主进程依赖、`electron/main.js`、`electron/preload.js` 或打包配置，发布后必须做 GitHub 下载包本机安装验收，不能只验证开发环境或 `win-unpacked`。
 
+### 2.1.2 preload 桥接缺失踩坑
+
+`2.1.2` 安装版可以启动，但 GitHub 下载包本机安装验收时发现窗口内 `window.winStatusInsight` 为 `false`，导致设置里的检查更新无法走 Electron 桌面接口。
+
+原因是 preload 文件使用 ESM 写法：
+
+```js
+import { contextBridge, ipcRenderer } from 'electron'
+```
+
+在当前打包后的 Electron preload 环境里不稳定。preload 必须使用 CommonJS `.cjs` 文件：
+
+```js
+const { contextBridge, ipcRenderer } = require('electron')
+```
+
+并且 `BrowserWindow.webPreferences.preload` 必须指向：
+
+```text
+electron/preload.cjs
+```
+
+发布后安装验收必须通过调试端口或等效方式确认：
+
+```js
+!!window.winStatusInsight === true
+```
+
 ## 6. 安装包路线
 
 WinStatusInsight 当前只维护安装版作为正式下载入口，不再把便携版作为正式发布路线。
