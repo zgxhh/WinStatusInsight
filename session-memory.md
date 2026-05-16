@@ -26,11 +26,26 @@ latest.yml
 
 只上传安装包会导致 GitHub 下载可用，但应用内更新不可用或无法差量更新。
 
+## 发布后本机安装验收
+
+- 每次正式发布完成后，必须从 GitHub Release 最新下载链接下载并安装到本机电脑，不能只验证本地 `release\win-unpacked`。
+- 安装后必须启动已安装版 `WinStatusInsight.exe`，确认没有主进程 JavaScript Error，窗口能正常打开，内置服务能启动。
+- 设置里的“检查版本更新”必须在桌面应用中走 Electron 接口，不能误判为“版本更新只在桌面应用中可用”。
+- 验收通过前，不把该版本当作真正完成；最终回复必须明确写出“本机安装验收结果”。
+- 如果安装版打不开或更新异常，记录错误原文或截图，升补丁版本继续修复并重新发布，不要把覆盖同版本 Release 当作常规修复。
+- 坏版本如果主进程无法启动，应用内更新无法自救，需要用户手动安装修复版一次。
+
 ## 适合的发布节奏
 
 - 本地开发预览：不需要提交、推送、打包或发布。
 - 自己安装使用：需要重新打包并本机安装，不一定需要发布 GitHub。
-- 给别人使用或让下载链接/应用内更新生效：需要升版本、提交、推送、打包，并更新 GitHub Release 三件套。
+- 给别人使用或让下载链接/应用内更新生效：需要升版本、提交、推送、打包，更新 GitHub Release 三件套，并从 GitHub latest 下载包安装到本机验收。
+
+## 已记录踩坑
+
+- `2.1.1` 曾因 `electron-updater` CommonJS/ESM 导入方式错误导致安装版主进程崩溃，错误为 `Named export 'autoUpdater' not found`。
+- 修复方式是使用默认导入再解构：`import updater from 'electron-updater'; const { autoUpdater } = updater`。
+- 以后改动 Electron 主进程依赖、`electron/main.js`、`electron/preload.js` 或打包配置后，必须做 GitHub 下载包本机安装验收。
 
 ## 踩坑点沉淀规则
 

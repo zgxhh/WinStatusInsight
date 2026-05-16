@@ -39,13 +39,59 @@ git status --short --branch
 ```text
 升 package.json version
 npm run package:win:installer
+验证 release\win-unpacked\WinStatusInsight.exe 可启动
 提交代码
 推送 main
 创建或更新 vX.Y.Z Release
 上传更新三件套
+从 GitHub 最新下载链接安装到本机
+启动已安装版并验收
+反查 latest Release、latest.yml、安装包下载链接
+清理测试进程和本地开发端口
 ```
 
-## 3. GitHub Release 更新三件套
+## 3. 发布后本机安装验收
+
+正式发布完成后，不能只以“打包成功”或“`release\win-unpacked` 能启动”作为完成标准。每次 GitHub Release 发完，都必须从 GitHub 最新下载链接安装到本机电脑，并启动安装版验收。
+
+验收入口必须使用：
+
+```text
+https://github.com/zgxhh/WinStatusInsight/releases/latest/download/WinStatusInsight-Setup-<version>.exe
+```
+
+不要只使用本地 `release\WinStatusInsight-Setup-<version>.exe` 代替最终验收，因为真实用户走的是 GitHub Release 下载链路。
+
+发布后安装验收清单：
+
+```text
+GitHub latest Release 版本与 package.json 一致
+Release 资产包含 exe、blockmap、latest.yml
+latest.yml 内 version 与安装包文件名正确
+从 GitHub latest 下载安装包并安装到本机
+启动已安装版 WinStatusInsight.exe
+确认没有主进程 JavaScript Error 弹窗
+确认窗口能正常显示主界面
+确认内置服务能启动
+确认设置里的“检查版本更新”走桌面应用接口，不误判为浏览器环境
+```
+
+验收通过前，不要把该版本当作真正完成，也不要在最终回复里只写“打包成功”。最终回复必须明确写出“本机安装验收结果”。
+
+如果安装版打不开或更新检查异常：
+
+```text
+记录错误原文或截图
+定位并修复
+升补丁版本，例如 2.1.1 -> 2.1.2
+重新构建、提交、推送、发布
+重新从 GitHub latest 下载安装并验收
+把踩坑点写入本文档和 session-memory.md
+```
+
+不要把同版本 Release 覆盖当作常规修复；坏版本如果主进程无法启动，应用内更新无法自救，必须手动安装修复版一次。
+
+## 4. GitHub Release 更新三件套
 
 应用内更新使用 `electron-updater`，正式 Release 必须同时上传：
 
@@ -63,7 +109,7 @@ latest.yml
 
 只上传 `.exe` 时，浏览器下载仍可用，但应用内更新不可用或无法差量更新。
 
-## 4. electron-updater 机制
+## 5. electron-updater 机制
 
 当前产品定义的更新体验：
 
@@ -113,7 +159,19 @@ const { autoUpdater } = updater
 
 每次改动 Electron 主进程依赖后，必须启动 `release\win-unpacked\WinStatusInsight.exe` 做一次真实桌面包冒烟验证，不能只跑 `npm run dev`。
 
-## 5. 安装包路线
+### 2.1.1 启动崩溃踩坑
+
+`2.1.1` 曾因 `electron-updater` CommonJS/ESM 导入方式错误导致安装版主进程崩溃。坏版本启动时报：
+
+```text
+Named export 'autoUpdater' not found
+```
+
+这类主进程启动崩溃会导致用户无法打开应用，也就无法通过应用内更新自救。必须升补丁版本重新发布，并让用户手动安装修复版一次。
+
+以后只要改动 Electron 主进程依赖、`electron/main.js`、`electron/preload.js` 或打包配置，发布后必须做 GitHub 下载包本机安装验收，不能只验证开发环境或 `win-unpacked`。
+
+## 6. 安装包路线
 
 WinStatusInsight 当前只维护安装版作为正式下载入口，不再把便携版作为正式发布路线。
 
@@ -125,7 +183,7 @@ https://github.com/zgxhh/WinStatusInsight/releases/latest/download/WinStatusInsi
 
 README 不要再主推便携版。若用户提到免安装/便携版，先确认是临时开发测试还是正式发布需求。
 
-## 6. 代码签名
+## 7. 代码签名
 
 当前未正式接入证书签名。不签名也能运行和更新，但可能出现：
 
@@ -149,7 +207,7 @@ $env:CSC_LINK="证书路径或 base64"
 $env:CSC_KEY_PASSWORD="证书密码"
 ```
 
-## 7. 本地端口与进程
+## 8. 本地端口与进程
 
 开发端口：
 
@@ -165,7 +223,7 @@ Get-NetTCPConnection -LocalPort 5273,5274 -State Listen
 Stop-Process -Id <PID> -Force
 ```
 
-## 8. 系统操作安全边界
+## 9. 系统操作安全边界
 
 可执行的低风险操作：
 
@@ -199,7 +257,7 @@ PID 0 / Idle / System
 已停止 X 个，跳过 Y 个受保护进程
 ```
 
-## 9. 磁盘迁移规则
+## 10. 磁盘迁移规则
 
 开发缓存迁移目标固定：
 
@@ -220,7 +278,7 @@ robocopy 到 D 盘
 
 不要直接硬删 `D:\MovedFromC`，否则 Junction 指向的数据会丢失。
 
-## 10. UI 与验收
+## 11. UI 与验收
 
 用户经常通过浏览器截图标注 UI 问题。若用户点名 `ui界面美化员`，必须读取并使用：
 
@@ -264,7 +322,7 @@ C:\Users\HUAWEI\.codex\skills\ui-polisher\SKILL.md
 - 趋势图绘图区要吃满高度。
 - 右侧瓶颈列表应卡内滚动，避免撑高整行。
 
-## 11. 截图与 README
+## 12. 截图与 README
 
 前端有明显 UI 变化后，需要重新截图并更新 README。
 
@@ -286,7 +344,7 @@ Playwright 可使用本地 Codex runtime：
 $env:NODE_PATH='C:\Users\HUAWEI\.cache\codex-runtimes\codex-primary-runtime\dependencies\node\node_modules'
 ```
 
-## 12. 构建验证
+## 13. 构建验证
 
 常用验证命令：
 
@@ -309,7 +367,7 @@ Get-Process WinStatusInsight
 Stop-Process -Id <PID> -Force
 ```
 
-## 13. 已知无害警告
+## 14. 已知无害警告
 
 以下警告已多次出现，不影响当前运行：
 
@@ -320,7 +378,7 @@ Some chunks are larger than 500 kB
 
 除非用户明确要求优化包体，否则不要因为这些警告中断任务。
 
-## 14. 编码与中文
+## 15. 编码与中文
 
 历史上 README 和部分输出曾出现中文乱码。后续编辑用户可见文档、README、项目记忆和 UI 文案时，应确保是正常 UTF-8。
 
