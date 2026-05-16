@@ -8,10 +8,6 @@ WinStatusInsight 是一款面向 Windows 桌面环境的本地状态分析工具
 
 [下载 WinStatusInsight-Setup-2.1.1.exe](https://github.com/zgxhh/WinStatusInsight/releases/latest/download/WinStatusInsight-Setup-2.1.1.exe)
 
-从 2.1 起，WinStatusInsight 只提供安装版。安装版会写入固定安装目录，创建桌面快捷方式、开始菜单入口和卸载入口，更适合长期使用与后续版本更新。
-
-如果安装到 `D:\Download` 等权限较特殊的目录后出现闪退，建议改装到 `D:\Apps\WinStatusInsight` 这类普通目录，或为安装目录授予当前用户完整权限。
-
 ## 产品截图
 
 ### 总览
