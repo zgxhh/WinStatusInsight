@@ -89,6 +89,30 @@ autoUpdater.quitAndInstall(false, true)
 
 开发环境下更新检查应提示“仅安装版可用”，不要让 `npm run dev` 直接触发 GitHub 更新流程。
 
+### electron-updater 导入方式
+
+当前项目是 ESM 主进程，`electron-updater` 是 CommonJS 包，不能写成：
+
+```js
+import { autoUpdater } from 'electron-updater'
+```
+
+安装版会在主进程启动时报：
+
+```text
+Named export 'autoUpdater' not found
+```
+
+正确写法：
+
+```js
+import updater from 'electron-updater'
+
+const { autoUpdater } = updater
+```
+
+每次改动 Electron 主进程依赖后，必须启动 `release\win-unpacked\WinStatusInsight.exe` 做一次真实桌面包冒烟验证，不能只跑 `npm run dev`。
+
 ## 5. 安装包路线
 
 WinStatusInsight 当前只维护安装版作为正式下载入口，不再把便携版作为正式发布路线。

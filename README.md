@@ -1,4 +1,4 @@
-# WinStatusInsight 2.1.1
+# WinStatusInsight 2.1.2
 
 WinStatusInsight 是一款面向 Windows 桌面环境的本地状态分析工具。它把系统资源采样、进程归因、本地开发服务识别、历史对比、磁盘空间治理和开机自启动管理整合到一个桌面应用中，用来快速判断“电脑为什么卡”“哪些应用正在拖慢系统”“哪些开发缓存可以安全处理”。
 
@@ -6,7 +6,7 @@ WinStatusInsight 是一款面向 Windows 桌面环境的本地状态分析工具
 
 ## 下载
 
-[下载 WinStatusInsight-Setup-2.1.1.exe](https://github.com/zgxhh/WinStatusInsight/releases/latest/download/WinStatusInsight-Setup-2.1.1.exe)
+[下载 WinStatusInsight-Setup-2.1.2.exe](https://github.com/zgxhh/WinStatusInsight/releases/latest/download/WinStatusInsight-Setup-2.1.2.exe)
 
 ## 产品截图
 
@@ -134,14 +134,14 @@ npm run package:win:installer
 产物默认位于：
 
 ```text
-release/WinStatusInsight-Setup-2.1.1.exe
+release/WinStatusInsight-Setup-2.1.2.exe
 ```
 
 正式发布给应用内更新使用时，GitHub Release 需要同时上传：
 
 ```text
-release/WinStatusInsight-Setup-2.1.1.exe
-release/WinStatusInsight-Setup-2.1.1.exe.blockmap
+release/WinStatusInsight-Setup-2.1.2.exe
+release/WinStatusInsight-Setup-2.1.2.exe.blockmap
 release/latest.yml
 ```
 

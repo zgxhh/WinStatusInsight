@@ -1,7 +1,9 @@
 import { app, BrowserWindow, Menu, Tray, ipcMain, shell, Notification } from 'electron'
 import path from 'node:path'
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs'
-import { autoUpdater } from 'electron-updater'
+import updater from 'electron-updater'
+
+const { autoUpdater } = updater
 
 let mainWindow = null
 let loadingWindow = null
