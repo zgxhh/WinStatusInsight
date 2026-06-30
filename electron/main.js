@@ -1,4 +1,4 @@
-import { app, BrowserWindow, Menu, Tray, ipcMain, shell, Notification } from 'electron'
+import { app, BrowserWindow, Menu, Tray, ipcMain, shell, Notification, dialog } from 'electron'
 import path from 'node:path'
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs'
 import updater from 'electron-updater'
@@ -505,6 +505,13 @@ ipcMain.handle('projects:open-local', () => {
   return { ok: true }
 })
 ipcMain.handle('projects:stop-stoppable', stopStoppableProjectsFromTray)
+ipcMain.handle('projects:select-folder', async () => {
+  const result = await dialog.showOpenDialog(mainWindow || undefined, {
+    title: '选择项目根目录',
+    properties: ['openDirectory']
+  })
+  return result.canceled ? '' : result.filePaths[0] || ''
+})
 
 const gotSingleInstanceLock = app.requestSingleInstanceLock()
 

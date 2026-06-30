@@ -24,6 +24,16 @@ const snapshot = ref(null)
 const history = ref([])
 const oldLogs = ref([])
 const localProjects = ref([])
+const projectBindings = ref([])
+const projectBindingLanAddresses = ref([])
+const bindingPath = ref('')
+const bindingDetecting = ref(false)
+const bindingSaving = ref(false)
+const bindingLoading = ref(false)
+const bindingActionId = ref('')
+const bindingLogsVisible = ref(false)
+const bindingLogsTitle = ref('')
+const bindingLogs = ref([])
 const compareIds = ref([])
 const compareSnapshots = ref([])
 const errorMessage = ref('')
@@ -32,6 +42,7 @@ const cleaningPid = ref(null)
 const localProjectsLoading = ref(false)
 const stoppingProjectId = ref('')
 const stoppingAllProjects = ref(false)
+const stoppingAllTasks = ref(false)
 const diskCheck = ref(null)
 const diskLoading = ref(false)
 const diskActionLoading = ref('')
@@ -54,7 +65,7 @@ const resourceSort = ref('impact')
 const startupItems = ref([])
 const startupLoading = ref(false)
 const togglingStartupId = ref('')
-const loadedTabs = ref({ background: false, projects: false, disk: false })
+const loadedTabs = ref({ background: false, projects: false, tasks: false, disk: false })
 let loadingGaugeFrame = null
 let settleGaugeFrame = null
 let removeUpdateStatusListener = null
@@ -74,6 +85,8 @@ const formatTime = (value) => {
   return date.toLocaleString('zh-CN', { hour12: false })
 }
 
+const delay = (ms) => new Promise((resolve) => window.setTimeout(resolve, ms))
+
 const riskType = (risk) => {
   if (risk === 'high') return 'danger'
   if (risk === 'medium') return 'warning'
@@ -84,6 +97,20 @@ const riskLabel = (risk) => {
   if (risk === 'high') return '高占用'
   if (risk === 'medium') return '关注'
   return '正常'
+}
+
+const moduleStatusType = (status) => {
+  if (status === 'running') return 'success'
+  if (status === 'starting') return 'warning'
+  if (status === 'error') return 'danger'
+  return 'info'
+}
+
+const moduleStatusLabel = (status) => {
+  if (status === 'running') return '运行中'
+  if (status === 'starting') return '启动中'
+  if (status === 'error') return '异常'
+  return '已停止'
 }
 
 const deltaType = (value, reverse = false) => {
@@ -134,7 +161,59 @@ const topMemoryRows = computed(() => sortedRows(snapshot.value?.topMemory || [])
 const backgroundRows = computed(() => sortedRows(snapshot.value?.background || []))
 const appGroupRows = computed(() => sortResourceRows(snapshot.value?.appGroups || []))
 const localProjectRows = computed(() => sortedRows(localProjects.value))
-const stoppableProjects = computed(() => localProjectRows.value.filter((project) => !project.protected))
+const projectBindingRows = computed(() => projectBindings.value || [])
+const normalizeLocalPath = (value = '') =>
+  String(value || '')
+    .replace(/\\/g, '/')
+    .replace(/\/+$/, '')
+    .toLowerCase()
+
+const extractPortFromUrl = (url = '') => {
+  const match = String(url || '').match(/:(\d+)(?:\/|$)/)
+  return match ? Number(match[1]) : null
+}
+
+const boundProjectRoots = computed(() => {
+  const roots = []
+  for (const binding of projectBindingRows.value) {
+    if (binding.rootPath) roots.push(normalizeLocalPath(binding.rootPath))
+    for (const module of binding.modules || []) {
+      if (module.cwd) roots.push(normalizeLocalPath(module.cwd))
+    }
+  }
+  return roots.filter(Boolean)
+})
+
+const boundProjectPorts = computed(() => new Set(
+  projectBindingRows.value.flatMap((binding) =>
+    (binding.modules || [])
+      .map((module) => Number(module.port || 0))
+      .filter(Boolean)
+  )
+))
+
+const projectPorts = (project = {}) => [
+  ...(project.ports || []).map((port) => Number(port)),
+  ...(project.urls || []).map(extractPortFromUrl)
+].filter(Boolean)
+
+const isBoundLocalProject = (project = {}) => {
+  const projectPath = normalizeLocalPath(project.projectPath)
+  if (projectPath && boundProjectRoots.value.some((root) => projectPath === root || projectPath.startsWith(`${root}/`))) {
+    return true
+  }
+  return projectPorts(project).some((port) => boundProjectPorts.value.has(port))
+}
+
+const isOpenableLocalProject = (project = {}) => Boolean(project.projectPath && project.urls?.length)
+const unboundLocalProjectRows = computed(() =>
+  localProjectRows.value.filter((project) => isOpenableLocalProject(project) && !isBoundLocalProject(project))
+)
+const runningTaskRows = computed(() =>
+  localProjectRows.value.filter((project) => !isBoundLocalProject(project) && !isOpenableLocalProject(project))
+)
+const stoppableUnboundProjects = computed(() => unboundLocalProjectRows.value.filter((project) => !project.protected))
+const stoppableRunningTasks = computed(() => runningTaskRows.value.filter((project) => !project.protected))
 const startupRows = computed(() => sortedRows(startupItems.value.map((item) => ({ ...item, protected: !item.manageable }))))
 const groupProcessRows = (group) => sortResourceRows(group?.processes || group?.topProcesses || [])
 const scoreDisplayValue = computed(() => {
@@ -382,8 +461,10 @@ const ensureTabData = (tabName) => {
     loadedTabs.value.background = true
     loadStartupItems()
   }
-  if (tabName === 'projects' && !loadedTabs.value.projects) {
+  if ((tabName === 'projects' || tabName === 'tasks') && !loadedTabs.value[tabName]) {
     loadedTabs.value.projects = true
+    loadedTabs.value.tasks = true
+    loadProjectBindings()
     loadLocalProjects()
   }
   if (tabName === 'disk' && !loadedTabs.value.disk) {
@@ -626,6 +707,164 @@ const openDiskPath = async (targetPath) => {
   }
 }
 
+const loadProjectBindings = async () => {
+  bindingLoading.value = true
+  try {
+    const response = await fetch('/api/project-bindings')
+    const result = await response.json()
+    if (!response.ok) throw new Error(result.message || '读取绑定项目失败')
+    projectBindings.value = result.items || []
+    projectBindingLanAddresses.value = result.lanAddresses || []
+  } catch (error) {
+    ElMessage.error(error.message)
+  } finally {
+    bindingLoading.value = false
+  }
+}
+
+const selectProjectFolder = async () => {
+  try {
+    let selectedPath = ''
+    if (desktopApi.value?.selectProjectFolder) {
+      selectedPath = await desktopApi.value.selectProjectFolder()
+    } else {
+      const response = await fetch('/api/project-bindings/select-folder', { method: 'POST' })
+      const result = await response.json()
+      if (!response.ok) throw new Error(result.message || '选择文件夹失败')
+      selectedPath = result.path || ''
+    }
+    if (selectedPath) bindingPath.value = selectedPath
+  } catch (error) {
+    ElMessage.error(error.message || '选择文件夹失败')
+  }
+}
+
+const addProjectBinding = async () => {
+  if (!bindingPath.value.trim()) {
+    ElMessage.warning('请先选择项目根目录')
+    return
+  }
+  bindingDetecting.value = true
+  bindingSaving.value = true
+  try {
+    const detectResponse = await fetch('/api/project-bindings/detect', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ rootPath: bindingPath.value.trim() })
+    })
+    const detected = await detectResponse.json()
+    if (!detectResponse.ok) throw new Error(detected.message || '自动识别失败')
+    const saveResponse = await fetch('/api/project-bindings', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(detected)
+    })
+    const saved = await saveResponse.json()
+    if (!saveResponse.ok) throw new Error(saved.message || '保存绑定失败')
+    bindingPath.value = ''
+    ElMessage.success(`已绑定项目：${saved.name}`)
+    await loadProjectBindings()
+  } catch (error) {
+    ElMessage.error(error.message)
+  } finally {
+    bindingDetecting.value = false
+    bindingSaving.value = false
+  }
+}
+
+const updateProjectBinding = async (binding) => {
+  bindingActionId.value = binding.id
+  try {
+    const response = await fetch(`/api/project-bindings/${binding.id}`, {
+      method: 'PATCH',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(binding)
+    })
+    const result = await response.json()
+    if (!response.ok) throw new Error(result.message || '保存配置失败')
+    await loadProjectBindings()
+  } catch (error) {
+    ElMessage.error(error.message)
+  } finally {
+    bindingActionId.value = ''
+  }
+}
+
+const startProjectBinding = async (binding) => {
+  bindingActionId.value = binding.id
+  try {
+    await updateProjectBinding(binding)
+    const response = await fetch(`/api/project-bindings/${binding.id}/start`, { method: 'POST' })
+    const result = await response.json()
+    if (!response.ok) throw new Error(result.message || '启动失败')
+    ElMessage.success(result.started?.length ? `已启动 ${result.started.length} 个模块` : '模块已经在运行')
+    await loadProjectBindings()
+    await waitForProjectBindingSettled(binding.id)
+    await loadLocalProjects()
+  } catch (error) {
+    ElMessage.error(error.message)
+  } finally {
+    bindingActionId.value = ''
+  }
+}
+
+const waitForProjectBindingSettled = async (bindingId) => {
+  for (let attempt = 0; attempt < 12; attempt += 1) {
+    const binding = projectBindingRows.value.find((item) => item.id === bindingId)
+    const modules = binding?.modules || []
+    if (modules.length && modules.every((module) => module.status !== 'starting')) return
+    await delay(900)
+    await loadProjectBindings()
+  }
+}
+
+const stopProjectBinding = async (binding) => {
+  bindingActionId.value = binding.id
+  try {
+    const response = await fetch(`/api/project-bindings/${binding.id}/stop`, { method: 'POST' })
+    const result = await response.json()
+    if (!response.ok) throw new Error(result.message || '停止失败')
+    ElMessage.success(result.stopped?.length ? `已停止 ${result.stopped.length} 个模块` : '没有运行中的模块')
+    await loadProjectBindings()
+    await loadLocalProjects()
+  } catch (error) {
+    ElMessage.error(error.message)
+  } finally {
+    bindingActionId.value = ''
+  }
+}
+
+const deleteProjectBinding = async (binding) => {
+  bindingActionId.value = binding.id
+  try {
+    const response = await fetch(`/api/project-bindings/${binding.id}`, { method: 'DELETE' })
+    const result = await response.json()
+    if (!response.ok) throw new Error(result.message || '删除失败')
+    ElMessage.success('已删除绑定')
+    await loadProjectBindings()
+  } catch (error) {
+    ElMessage.error(error.message)
+  } finally {
+    bindingActionId.value = ''
+  }
+}
+
+const showProjectBindingLogs = async (binding) => {
+  bindingActionId.value = binding.id
+  try {
+    const response = await fetch(`/api/project-bindings/${binding.id}/logs`)
+    const result = await response.json()
+    if (!response.ok) throw new Error(result.message || '读取日志失败')
+    bindingLogsTitle.value = `${binding.name} 日志`
+    bindingLogs.value = result.entries || []
+    bindingLogsVisible.value = true
+  } catch (error) {
+    ElMessage.error(error.message)
+  } finally {
+    bindingActionId.value = ''
+  }
+}
+
 const cleanDiskItem = async (item) => {
   if (item.operation !== 'clean') return
   diskActionLoading.value = item.id
@@ -724,8 +963,7 @@ const stopLocalProject = async (project) => {
   }
 }
 
-const stopAllLocalProjects = async () => {
-  const projects = stoppableProjects.value
+const stopAllLocalProjects = async (projects = stoppableUnboundProjects.value) => {
   if (!projects.length) return
   const pids = projects.flatMap((project) => project.pids)
   stoppingAllProjects.value = true
@@ -744,6 +982,29 @@ const stopAllLocalProjects = async () => {
     ElMessage.error(error.message)
   } finally {
     stoppingAllProjects.value = false
+  }
+}
+
+const stopAllRunningTasks = async () => {
+  const projects = stoppableRunningTasks.value
+  if (!projects.length) return
+  const pids = projects.flatMap((project) => project.pids)
+  stoppingAllTasks.value = true
+  try {
+    const response = await fetch('/api/local-projects/stop', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ pids })
+    })
+    const result = await response.json()
+    if (!response.ok) throw new Error(result.message || '停止运行任务失败')
+    showStopResult(result)
+    await loadLocalProjects()
+    await readStatus()
+  } catch (error) {
+    ElMessage.error(error.message)
+  } finally {
+    stoppingAllTasks.value = false
   }
 }
 
@@ -1021,6 +1282,15 @@ onBeforeUnmount(() => {
       </div>
     </el-dialog>
 
+    <el-dialog v-model="bindingLogsVisible" :title="bindingLogsTitle" width="760px" align-center>
+      <div class="binding-log-list">
+        <section v-for="entry in bindingLogs" :key="entry.moduleId" class="binding-log-entry">
+          <strong>{{ entry.moduleName }}</strong>
+          <pre>{{ entry.log || '暂无日志' }}</pre>
+        </section>
+      </div>
+    </el-dialog>
+
     <el-alert v-if="errorMessage" class="alert" type="error" :title="errorMessage" show-icon />
 
     <section class="hero-grid">
@@ -1285,8 +1555,88 @@ onBeforeUnmount(() => {
         </el-tab-pane>
 
         <el-tab-pane label="本地项目" name="projects">
-          <div class="projects-toolbar">
-            <span>正在运行的开发项目 {{ localProjectRows.length }} 个</span>
+          <section class="binding-section">
+            <div class="projects-toolbar">
+              <span>已绑定项目 {{ projectBindingRows.length }} 个</span>
+              <div class="binding-add">
+                <div class="folder-picker">
+                  <span class="selected-folder" :title="bindingPath">{{ bindingPath || '未选择项目文件夹' }}</span>
+                  <el-button size="small" @click="selectProjectFolder">
+                    <FolderOpen :size="14" />
+                    选择文件夹
+                  </el-button>
+                </div>
+                <el-button size="small" type="primary" :loading="bindingDetecting || bindingSaving" @click="addProjectBinding">
+                  识别并绑定
+                </el-button>
+                <el-button size="small" :loading="bindingLoading" @click="loadProjectBindings">
+                  <RefreshCcw :size="14" />
+                  刷新
+                </el-button>
+              </div>
+            </div>
+
+            <div v-if="projectBindingRows.length" class="binding-list">
+              <article v-for="binding in projectBindingRows" :key="binding.id" class="binding-card">
+                <header class="binding-card-head">
+                  <div>
+                    <strong>{{ binding.name }}</strong>
+                    <small>{{ binding.rootPath }}</small>
+                  </div>
+                  <div class="binding-actions">
+                    <span v-if="projectBindingLanAddresses.length" class="binding-lan-text">
+                      局域网 {{ projectBindingLanAddresses[0] }}
+                    </span>
+                    <el-switch
+                      v-model="binding.lanEnabled"
+                      size="small"
+                      active-text="局域网"
+                      @change="() => updateProjectBinding(binding)"
+                    />
+                    <el-button size="small" type="primary" :loading="bindingActionId === binding.id" @click="startProjectBinding(binding)">启动</el-button>
+                    <el-button size="small" :loading="bindingActionId === binding.id" @click="stopProjectBinding(binding)">停止</el-button>
+                    <el-button size="small" @click="showProjectBindingLogs(binding)">日志</el-button>
+                    <el-button size="small" type="danger" plain :loading="bindingActionId === binding.id" @click="deleteProjectBinding(binding)">删除</el-button>
+                  </div>
+                </header>
+                <el-table :data="binding.modules" size="small" stripe>
+                  <el-table-column label="启用" width="72">
+                    <template #default="{ row }">
+                      <el-checkbox v-model="row.enabled" @change="() => updateProjectBinding(binding)" />
+                    </template>
+                  </el-table-column>
+                  <el-table-column prop="name" label="模块" min-width="120" />
+                  <el-table-column prop="type" label="类型" width="90" />
+                  <el-table-column prop="command" label="启动命令" min-width="150" show-overflow-tooltip />
+                  <el-table-column prop="cwd" label="目录" min-width="220" show-overflow-tooltip />
+                  <el-table-column label="端口" width="90">
+                    <template #default="{ row }">{{ row.port || '-' }}</template>
+                  </el-table-column>
+                  <el-table-column label="状态" width="95">
+                    <template #default="{ row }">
+                      <el-tooltip :disabled="!row.lastError" :content="row.lastError" placement="top">
+                        <el-tag :type="moduleStatusType(row.status)">{{ moduleStatusLabel(row.status) }}</el-tag>
+                      </el-tooltip>
+                    </template>
+                  </el-table-column>
+                  <el-table-column label="地址" min-width="180">
+                    <template #default="{ row }">
+                      <div v-if="row.urls?.length" class="project-urls">
+                        <el-link v-for="url in row.urls" :key="url" :href="url" target="_blank" type="primary">
+                          {{ url.replace('http://', '') }}
+                        </el-link>
+                      </div>
+                      <span v-else>-</span>
+                    </template>
+                  </el-table-column>
+                </el-table>
+              </article>
+            </div>
+            <el-empty v-else description="还没有绑定项目，选择项目根目录后自动识别模块" :image-size="76" />
+          </section>
+
+          <div class="projects-toolbar running-toolbar">
+            <span>未绑定本地项目 {{ unboundLocalProjectRows.length }} 个</span>
             <div class="projects-actions">
               <el-button size="small" :loading="localProjectsLoading" @click="loadLocalProjects">
                 <RefreshCcw :size="14" />
@@ -1295,16 +1645,16 @@ onBeforeUnmount(() => {
               <el-button
                 size="small"
                 type="danger"
-                :disabled="!stoppableProjects.length"
+                :disabled="!stoppableUnboundProjects.length"
                 :loading="stoppingAllProjects"
-                @click="stopAllLocalProjects"
+                @click="stopAllLocalProjects()"
               >
                 <Trash2 :size="14" />
                 全部停止
               </el-button>
             </div>
           </div>
-          <el-table :data="localProjectRows" height="390" stripe :row-class-name="rowClassName">
+          <el-table :data="unboundLocalProjectRows" height="240" stripe :row-class-name="rowClassName">
             <el-table-column prop="name" label="项目" min-width="150" sortable />
             <el-table-column prop="kind" label="类型" width="110" />
             <el-table-column label="访问地址" min-width="180">
@@ -1315,6 +1665,65 @@ onBeforeUnmount(() => {
                   </el-link>
                 </div>
                 <span v-else>-</span>
+              </template>
+            </el-table-column>
+            <el-table-column prop="processCount" label="进程数" width="95" sortable />
+            <el-table-column label="内存" width="115" sortable>
+              <template #default="{ row }">{{ row.memoryGb }} GB</template>
+            </el-table-column>
+            <el-table-column label="状态" width="125">
+              <template #default="{ row }">
+                <el-tag :type="row.protected ? 'info' : 'warning'">{{ row.protectedReason || (row.protected ? '受保护' : '可停止') }}</el-tag>
+              </template>
+            </el-table-column>
+            <el-table-column prop="projectPath" label="路径" min-width="280" show-overflow-tooltip />
+            <el-table-column label="主要进程" min-width="260" show-overflow-tooltip>
+              <template #default="{ row }">
+                {{ row.processes.map((item) => `${item.name}(${item.pid})`).join('、') }}
+              </template>
+            </el-table-column>
+            <el-table-column label="控制" width="110" fixed="right">
+              <template #default="{ row }">
+                <el-button
+                  v-if="!row.protected"
+                  size="small"
+                  type="danger"
+                  :loading="stoppingProjectId === row.id"
+                  @click="stopLocalProject(row)"
+                >
+                  停止
+                </el-button>
+              </template>
+            </el-table-column>
+          </el-table>
+        </el-tab-pane>
+
+        <el-tab-pane label="运行任务" name="tasks">
+          <div class="projects-toolbar">
+            <span>运行任务 {{ runningTaskRows.length }} 个</span>
+            <div class="projects-actions">
+              <el-button size="small" :loading="localProjectsLoading" @click="loadLocalProjects">
+                <RefreshCcw :size="14" />
+                刷新
+              </el-button>
+              <el-button
+                size="small"
+                type="danger"
+                :disabled="!stoppableRunningTasks.length"
+                :loading="stoppingAllTasks"
+                @click="stopAllRunningTasks"
+              >
+                <Trash2 :size="14" />
+                全部停止
+              </el-button>
+            </div>
+          </div>
+          <el-table :data="runningTaskRows" height="390" stripe :row-class-name="rowClassName">
+            <el-table-column prop="name" label="任务" min-width="150" sortable />
+            <el-table-column prop="kind" label="类型" width="110" />
+            <el-table-column label="监听端口" min-width="180">
+              <template #default="{ row }">
+                <span>{{ projectPorts(row).join('、') || '-' }}</span>
               </template>
             </el-table-column>
             <el-table-column prop="processCount" label="进程数" width="95" sortable />

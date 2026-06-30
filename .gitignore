@@ -3,6 +3,8 @@ dist/
 release/
 data/snapshots/*.json
 data/snapshots/
+data/project-bindings.json
+data/project-binding-logs/
 logs/
 output/
 .playwright-cli/

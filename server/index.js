@@ -4,6 +4,8 @@ import { fileURLToPath } from 'node:url'
 import path from 'node:path'
 import fs from 'node:fs/promises'
 import { existsSync } from 'node:fs'
+import os from 'node:os'
+import { createProjectBindingsService, getLanAddresses } from './project-bindings.js'
 
 const __filename = fileURLToPath(import.meta.url)
 const __dirname = path.dirname(__filename)
@@ -14,6 +16,8 @@ const snapshotsDir = path.join(dataDir, 'snapshots')
 const scriptPath = process.env.WIN_STATUS_INSIGHT_SCRIPT_PATH || path.join(rootDir, 'scripts', 'collect-status.ps1')
 const oldLogsDir = 'C:\\Users\\HUAWEI\\Documents\\Codex\\2026-05-10\\win\\lag-logs'
 const port = Number(process.env.PORT || 5274)
+const isDarwin = process.platform === 'darwin'
+const platformLabel = isDarwin ? 'macOS' : process.platform === 'win32' ? 'Windows' : process.platform
 const powershellExe =
   process.env.WIN_STATUS_INSIGHT_POWERSHELL_PATH ||
   path.join(process.env.SystemRoot || process.env.windir || 'C:\\Windows', 'System32', 'WindowsPowerShell', 'v1.0', 'powershell.exe')
@@ -22,6 +26,7 @@ const movedRoot = 'D:\\MovedFromC'
 
 const app = express()
 app.use(express.json())
+const projectBindings = createProjectBindingsService({ dataDir, lanAddresses: getLanAddresses })
 
 const STATUS_PROCESS_TOP = 60
 const STATIC_METADATA_TTL_MS = 5 * 60 * 1000
@@ -401,6 +406,9 @@ async function pathExists(filePath) {
 }
 
 function openWindowsPath(targetPath) {
+  if (isDarwin) {
+    return execFileText('open', [targetPath]).then(() => undefined)
+  }
   return new Promise((resolve, reject) => {
     execFile(
       powershellExe,
@@ -597,6 +605,7 @@ async function buildAppCacheDiskRow(item) {
 }
 
 async function scanDiskCheck() {
+  if (isDarwin) return scanDiskCheckDarwin()
   const [drives, migrationRows, cleanRows, appRows, movedRootExists] = await Promise.all([
     getDrives(),
     Promise.all(DISK_MIGRATION_ITEMS.map(buildMigrationDiskRow)),
@@ -776,6 +785,11 @@ if ($backup.StartsWith((Split-Path $source -Parent), [StringComparison]::Ordinal
 }
 
 function isAllowedDiskPath(value) {
+  if (isDarwin) {
+    const target = path.resolve(String(value || ''))
+    const home = os.homedir()
+    return target === '/' || target === home || target.startsWith(`${home}${path.sep}`) || target.startsWith('/Applications')
+  }
   const normalized = normalizePathText(path.win32.normalize(String(value || '')))
   if (!normalized) return false
   const allowedRoots = [userProfile, movedRoot, 'C:\\$RECYCLE.BIN', 'C:\\', 'D:\\'].map((item) => normalizePathText(path.win32.normalize(item)))
@@ -973,6 +987,7 @@ function buildLocalProjects(processes) {
 }
 
 async function listLocalProjects() {
+  if (isDarwin) return listLocalProjectsDarwin()
   const script = `
 $ErrorActionPreference = "SilentlyContinue"
 $devCommandPattern = "vite|next|nuxt|webpack|nodemon|ts-node|tsx|server/index.js|dotnet\\s+(watch|run)|dotnet-watch|watch\\.dll|--urls|ASPNETCORE_URLS|ASPNETCORE_ENVIRONMENT|localhost:\\d+|http://localhost"
@@ -1090,6 +1105,7 @@ function enrichStartupItem(item) {
 }
 
 async function listStartupItems() {
+  if (isDarwin) return listStartupItemsDarwin()
   const script = `
 $ErrorActionPreference = "SilentlyContinue"
 $backupRoot = "HKCU:\\Software\\WinStatusInsight\\DisabledStartup"
@@ -1172,6 +1188,12 @@ if (Test-Path $disabledFolder) {
 }
 
 async function toggleStartupItem({ name, command, type, enabled }) {
+  if (isDarwin) {
+    return {
+      ok: false,
+      unsupportedReason: 'macOS 启动项当前只读展示，暂不在工具内开关。'
+    }
+  }
   const safeName = String(name || '').replace(/'/g, "''")
   const safeCommand = String(command || '').replace(/'/g, "''")
   const action = enabled ? 'enable' : 'disable'
@@ -1496,6 +1518,20 @@ function canStopLocalProjectProcess(processInfo) {
 }
 
 function getProcessInfo(pid) {
+  if (isDarwin) {
+    return execFileText('ps', ['-p', String(pid), '-o', 'pid=,ppid=,rss=,comm=,command=']).then((output) => {
+      const match = output.trim().match(/^(\d+)\s+(\d+)\s+(\d+)\s+(\S+)\s+(.+)$/)
+      if (!match) throw new Error('进程已退出，已跳过。')
+      return {
+        pid: Number(match[1]),
+        parentProcessId: Number(match[2]),
+        name: normalizeDarwinProcessName(match[4]),
+        path: match[4],
+        commandLine: match[5],
+        workingSet: Number(match[3] || 0) * 1024
+      }
+    })
+  }
   return new Promise((resolve, reject) => {
     execFile(
       powershellExe,
@@ -1523,6 +1559,9 @@ function getProcessInfo(pid) {
 }
 
 function terminateProcess(pid) {
+  if (isDarwin) {
+    return execFileText('kill', [String(pid)]).then((stdout) => ({ stdout }))
+  }
   return new Promise((resolve, reject) => {
     execFile(
       powershellExe,
@@ -1544,6 +1583,292 @@ function friendlyProcessError(error) {
   if (/access is denied|拒绝|denied|CouldNotStopProcess/i.test(message)) return '权限不足，已跳过。'
   if (/not found|No Instance|Cannot find|找不到/i.test(message)) return '进程已退出，已跳过。'
   return '停止失败，已跳过。'
+}
+
+function execFileText(command, args = [], options = {}) {
+  return new Promise((resolve, reject) => {
+    execFile(command, args, { maxBuffer: 16 * 1024 * 1024, ...options }, (error, stdout, stderr) => {
+      if (error) {
+        reject(new Error(stderr || error.message))
+        return
+      }
+      resolve(String(stdout || ''))
+    })
+  })
+}
+
+function selectProjectFolder() {
+  if (isDarwin) {
+    return new Promise((resolve, reject) => {
+      execFile(
+        'osascript',
+        [
+          '-e',
+          'set selectedFolder to choose folder with prompt "选择项目根目录"',
+          '-e',
+          'POSIX path of selectedFolder'
+        ],
+        { maxBuffer: 1024 * 1024 },
+        (error, stdout, stderr) => {
+          const message = String(stderr || error?.message || '')
+          if (error && /User canceled|用户已取消|cancel/i.test(message)) {
+            resolve({ canceled: true, path: '' })
+            return
+          }
+          if (error) {
+            reject(new Error(message || '选择文件夹失败'))
+            return
+          }
+          resolve({ canceled: false, path: String(stdout || '').trim().replace(/\/$/, '') })
+        }
+      )
+    })
+  }
+
+  if (process.platform === 'win32') {
+    const script = `
+Add-Type -AssemblyName System.Windows.Forms
+$dialog = New-Object System.Windows.Forms.FolderBrowserDialog
+$dialog.Description = "选择项目根目录"
+$dialog.ShowNewFolderButton = $false
+if ($dialog.ShowDialog() -eq [System.Windows.Forms.DialogResult]::OK) {
+  $dialog.SelectedPath
+}
+`
+    return execFileText(powershellExe, ['-NoProfile', '-ExecutionPolicy', 'Bypass', '-Command', script], { windowsHide: false })
+      .then((output) => ({ canceled: !String(output || '').trim(), path: String(output || '').trim() }))
+  }
+
+  const error = new Error('当前系统暂不支持浏览器内选择文件夹，请在桌面应用中使用。')
+  error.statusCode = 501
+  throw error
+}
+
+function commandLineTokens(line) {
+  return String(line || '').match(/(?:[^\s"']+|"[^"]*"|'[^']*')+/g)?.map((item) => item.replace(/^['"]|['"]$/g, '')) || []
+}
+
+function darwinProjectPathFromCommand(commandLine) {
+  const tokens = commandLineTokens(commandLine)
+  for (let index = 0; index < tokens.length; index += 1) {
+    if (tokens[index] === '--prefix' && tokens[index + 1]) return tokens[index + 1]
+  }
+  const cwdFlag = tokens.find((item) => item.startsWith('--prefix='))
+  if (cwdFlag) return cwdFlag.slice('--prefix='.length)
+  const cwd = tokens.find((item) => item.startsWith('/Users/') && !item.includes('/node_modules/'))
+  if (cwd) {
+    const packageIndex = cwd.indexOf('/package.json')
+    if (packageIndex > 0) return cwd.slice(0, packageIndex)
+    return cwd
+  }
+  return ''
+}
+
+function normalizeDarwinProcessName(command) {
+  const base = path.basename(String(command || 'unknown'))
+  if (base === 'Electron') return 'Electron'
+  return base.replace(/\s+\(Renderer\)$/i, '')
+}
+
+async function darwinPortMap() {
+  const output = await execFileText('lsof', ['-nP', '-iTCP', '-sTCP:LISTEN']).catch(() => '')
+  const map = new Map()
+  for (const line of output.split('\n').slice(1)) {
+    const parts = line.trim().split(/\s+/)
+    if (parts.length < 9) continue
+    const pid = Number(parts[1])
+    const name = parts.slice(8).join(' ')
+    const match = name.match(/:(\d+)\s+\(LISTEN\)$/)
+    if (!pid || !match) continue
+    const list = map.get(pid) || []
+    list.push(Number(match[1]))
+    map.set(pid, list)
+  }
+  return map
+}
+
+async function collectDarwinStatus() {
+  const [psOutput, vmOutput, dfOutput, ports] = await Promise.all([
+    execFileText('ps', ['-axo', 'pid=,ppid=,pcpu=,rss=,comm=,command=']),
+    execFileText('vm_stat'),
+    execFileText('df', ['-k', '/']),
+    darwinPortMap()
+  ])
+  const cpus = os.cpus().length || 1
+  const totalMemory = os.totalmem()
+  const freeMemory = os.freemem()
+  const usedMemory = Math.max(0, totalMemory - freeMemory)
+  const pages = {}
+  for (const line of vmOutput.split('\n')) {
+    const match = line.match(/^(.+?):\s+([0-9.]+)/)
+    if (match) pages[match[1]] = Number(match[2])
+  }
+  const pageSize = 4096
+  const inactive = (pages['Pages inactive'] || 0) * pageSize
+  const speculative = (pages['Pages speculative'] || 0) * pageSize
+  const memoryFree = Math.max(freeMemory, inactive + speculative)
+  const dfLine = dfOutput.split('\n')[1] || ''
+  const dfParts = dfLine.trim().split(/\s+/)
+  const totalDisk = Number(dfParts[1] || 0) * 1024
+  const usedDisk = Number(dfParts[2] || 0) * 1024
+  const processes = psOutput
+    .split('\n')
+    .map((line) => {
+      const match = line.trim().match(/^(\d+)\s+(\d+)\s+([\d.]+)\s+(\d+)\s+(\S+)\s+(.+)$/)
+      if (!match) return null
+      const pid = Number(match[1])
+      const rss = Number(match[4] || 0) * 1024
+      const command = match[5]
+      const commandLine = match[6] || ''
+      return {
+        pid,
+        parentProcessId: Number(match[2]),
+        name: normalizeDarwinProcessName(command),
+        path: command.startsWith('/') ? command : '',
+        commandLine,
+        cpuPercent: Number((Number(match[3] || 0) / cpus).toFixed(2)),
+        cpuDeltaSeconds: 0,
+        workingSet: rss,
+        privateMemory: rss,
+        mainWindowTitle: '',
+        ports: ports.get(pid) || []
+      }
+    })
+    .filter(Boolean)
+    .sort((a, b) => b.cpuPercent - a.cpuPercent || b.workingSet - a.workingSet)
+    .slice(0, STATUS_PROCESS_TOP)
+
+  return {
+    platform: process.platform,
+    platformLabel,
+    lanAddresses: getLanAddresses(),
+    capturedAt: new Date().toISOString(),
+    computerName: os.hostname(),
+    intervalSeconds: 1,
+    logicalCores: cpus,
+    system: {
+      cpuPercent: Number(processes.reduce((sum, item) => sum + item.cpuPercent, 0).toFixed(2)),
+      memoryTotal: totalMemory,
+      memoryUsed: usedMemory,
+      memoryFree,
+      memoryPercent: Number(((usedMemory * 100) / totalMemory).toFixed(2)),
+      diskBusyPercent: 0
+    },
+    disks: [
+      {
+        name: '/',
+        busyPercent: 0,
+        queueLength: 0,
+        readBytesPerSec: 0,
+        writeBytesPerSec: 0,
+        totalBytes: totalDisk,
+        usedBytes: usedDisk
+      }
+    ],
+    processes,
+    startupItems: [],
+    services: []
+  }
+}
+
+async function listLocalProjectsDarwin() {
+  const [psOutput, ports] = await Promise.all([
+    execFileText('ps', ['-axo', 'pid=,ppid=,rss=,comm=,command=']),
+    darwinPortMap()
+  ])
+  const candidates = psOutput
+    .split('\n')
+    .map((line) => {
+      const match = line.trim().match(/^(\d+)\s+(\d+)\s+(\d+)\s+(\S+)\s+(.+)$/)
+      if (!match) return null
+      const pid = Number(match[1])
+      const commandLine = match[5] || ''
+      const name = normalizeDarwinProcessName(match[4])
+      const procPorts = ports.get(pid) || []
+      const text = `${name} ${commandLine}`
+      if (!/(vite|node|npm|pnpm|bun|dotnet|next|nuxt|server\/index\.js|--urls|localhost:\d+)/i.test(text) && !procPorts.some((port) => port >= 3000 && port <= 9999)) return null
+      const projectPath = darwinProjectPathFromCommand(commandLine)
+      return {
+        pid,
+        parentProcessId: Number(match[2]),
+        name,
+        path: match[4],
+        commandLine,
+        workingSet: Number(match[3] || 0) * 1024,
+        ports: procPorts,
+        projectPath
+      }
+    })
+    .filter(Boolean)
+  return buildLocalProjects(candidates)
+}
+
+async function listStartupItemsDarwin() {
+  const roots = [
+    { dir: path.join(os.homedir(), 'Library', 'LaunchAgents'), scope: '当前用户', manageable: false },
+    { dir: '/Library/LaunchAgents', scope: '所有用户', manageable: false },
+    { dir: '/Library/LaunchDaemons', scope: '系统服务', manageable: false }
+  ]
+  const rows = []
+  for (const root of roots) {
+    let files = []
+    try {
+      files = await fs.readdir(root.dir)
+    } catch {
+      continue
+    }
+    for (const file of files.filter((item) => item.endsWith('.plist'))) {
+      rows.push({
+        id: `${root.dir}/${file}`,
+        name: file.replace(/\.plist$/, ''),
+        displayName: file.replace(/\.plist$/, ''),
+        command: '',
+        location: root.dir,
+        scope: root.scope,
+        type: 'launch-agent',
+        enabled: true,
+        manageable: root.manageable,
+        disabledReason: 'macOS 启动项当前只读展示，避免误改 LaunchAgent/Daemon。',
+        description: 'macOS LaunchAgent/Daemon 启动项，当前版本只读展示。'
+      })
+    }
+  }
+  return rows
+}
+
+async function scanDiskCheckDarwin() {
+  const dfOutput = await execFileText('df', ['-k', os.homedir(), '/']).catch(() => '')
+  const drives = dfOutput
+    .split('\n')
+    .slice(1)
+    .map((line) => line.trim().split(/\s+/))
+    .filter((parts) => parts.length >= 6)
+    .map((parts) => {
+      const total = Number(parts[1] || 0) * 1024
+      const used = Number(parts[2] || 0) * 1024
+      const free = Number(parts[3] || 0) * 1024
+      return {
+        drive: parts[5],
+        totalBytes: total,
+        freeBytes: free,
+        usedBytes: used,
+        freePercent: total ? Number(((free * 100) / total).toFixed(1)) : 0
+      }
+    })
+  const cacheItems = [
+    { id: 'npm-cache', label: 'npm 缓存', path: path.join(os.homedir(), '.npm'), type: 'app-cache', risk: '谨慎', action: '可通过 npm cache 管理，不自动删除。' },
+    { id: 'library-cache', label: '用户缓存', path: path.join(os.homedir(), 'Library', 'Caches'), type: 'app-cache', risk: '谨慎', action: '只读分析，建议按应用清理。' },
+    { id: 'codex-data', label: 'Codex 数据', path: path.join(os.homedir(), '.codex'), type: 'app-cache', risk: '高风险', action: '只做容量分析，不移动不删除。' }
+  ]
+  const items = await Promise.all(cacheItems.map(buildAppCacheDiskRow))
+  return {
+    generatedAt: new Date().toISOString(),
+    movedRoot: { path: path.join(os.homedir(), 'MovedFromMac'), exists: false, sizeBytes: 0 },
+    drives,
+    items,
+    largeItems: [...items].sort((a, b) => Number(b.sizeBytes || 0) - Number(a.sizeBytes || 0)).slice(0, 10),
+    summary: 'macOS 只读扫描完成；高风险目录不自动清理。'
+  }
 }
 
 function metadataStatus() {
@@ -1589,6 +1914,7 @@ function enrich(raw, options = {}) {
 }
 
 function runCollector() {
+  if (isDarwin) return collectDarwinStatus()
   return new Promise((resolve, reject) => {
     execFile(
       powershellExe,
@@ -1622,6 +1948,9 @@ function runCollector() {
 }
 
 function runMetadataCollector() {
+  if (isDarwin) {
+    return Promise.resolve({ startupItems: [], services: [] })
+  }
   return new Promise((resolve, reject) => {
     execFile(
       powershellExe,
@@ -1922,6 +2251,10 @@ app.get('/api/disk-check', async (_req, res) => {
 })
 
 app.post('/api/disk-check/clean', async (req, res) => {
+  if (isDarwin) {
+    res.status(400).json({ message: 'macOS 当前只读扫描，不自动清理缓存目录。' })
+    return
+  }
   const id = String(req.body?.id || '')
   const item = cleanItemById.get(id)
   if (!item) {
@@ -1937,6 +2270,10 @@ app.post('/api/disk-check/clean', async (req, res) => {
 })
 
 app.post('/api/disk-check/migrate', async (req, res) => {
+  if (isDarwin) {
+    res.status(400).json({ message: 'macOS 当前不执行自动迁移，只提供只读分析。' })
+    return
+  }
   const id = String(req.body?.id || '')
   const item = migrationItemById.get(id)
   if (!item) {
@@ -1984,6 +2321,83 @@ app.post('/api/disk-check/open-path', async (req, res) => {
     res.json({ ok: true, path: openPath })
   } catch (error) {
     res.status(500).json({ message: error.message })
+  }
+})
+
+app.get('/api/project-bindings', async (_req, res) => {
+  try {
+    res.json({
+      platform: process.platform,
+      platformLabel,
+      lanAddresses: getLanAddresses(),
+      items: await projectBindings.readBindings()
+    })
+  } catch (error) {
+    res.status(500).json({ message: error.message })
+  }
+})
+
+app.post('/api/project-bindings/select-folder', async (_req, res) => {
+  try {
+    res.json(await selectProjectFolder())
+  } catch (error) {
+    res.status(error.statusCode || 500).json({ message: error.message })
+  }
+})
+
+app.post('/api/project-bindings/detect', async (req, res) => {
+  try {
+    res.json(await projectBindings.detect(req.body?.rootPath))
+  } catch (error) {
+    res.status(400).json({ message: error.message })
+  }
+})
+
+app.post('/api/project-bindings', async (req, res) => {
+  try {
+    res.json(await projectBindings.create(req.body || {}))
+  } catch (error) {
+    res.status(400).json({ message: error.message })
+  }
+})
+
+app.patch('/api/project-bindings/:id', async (req, res) => {
+  try {
+    res.json(await projectBindings.update(req.params.id, req.body || {}))
+  } catch (error) {
+    res.status(400).json({ message: error.message })
+  }
+})
+
+app.delete('/api/project-bindings/:id', async (req, res) => {
+  try {
+    res.json(await projectBindings.remove(req.params.id))
+  } catch (error) {
+    res.status(400).json({ message: error.message })
+  }
+})
+
+app.post('/api/project-bindings/:id/start', async (req, res) => {
+  try {
+    res.json(await projectBindings.start(req.params.id))
+  } catch (error) {
+    res.status(400).json({ message: error.message })
+  }
+})
+
+app.post('/api/project-bindings/:id/stop', async (req, res) => {
+  try {
+    res.json(await projectBindings.stop(req.params.id))
+  } catch (error) {
+    res.status(400).json({ message: error.message })
+  }
+})
+
+app.get('/api/project-bindings/:id/logs', async (req, res) => {
+  try {
+    res.json(await projectBindings.logs(req.params.id))
+  } catch (error) {
+    res.status(400).json({ message: error.message })
   }
 })
 

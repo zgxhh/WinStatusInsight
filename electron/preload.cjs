@@ -12,6 +12,7 @@ contextBridge.exposeInMainWorld('winStatusInsight', {
   },
   openLocalProjectsFromTray: () => ipcRenderer.invoke('projects:open-local'),
   stopStoppableProjectsFromTray: () => ipcRenderer.invoke('projects:stop-stoppable'),
+  selectProjectFolder: () => ipcRenderer.invoke('projects:select-folder'),
   onNavigateTab: (callback) => {
     const handler = (_event, tabName) => callback(tabName)
     ipcRenderer.on('navigate-tab', handler)
