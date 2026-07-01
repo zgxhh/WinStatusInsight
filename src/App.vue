@@ -4,7 +4,7 @@ import { ElMessage } from 'element-plus'
 import VChart from 'vue-echarts'
 import { use } from 'echarts/core'
 import { CanvasRenderer } from 'echarts/renderers'
-import { GaugeChart, LineChart, PieChart } from 'echarts/charts'
+import { BarChart, GaugeChart, LineChart, PieChart } from 'echarts/charts'
 import { GridComponent, LegendComponent, TooltipComponent } from 'echarts/components'
 import {
   Activity,
@@ -17,7 +17,7 @@ import {
   Trash2
 } from 'lucide-vue-next'
 
-use([CanvasRenderer, GaugeChart, LineChart, PieChart, GridComponent, LegendComponent, TooltipComponent])
+use([CanvasRenderer, BarChart, GaugeChart, LineChart, PieChart, GridComponent, LegendComponent, TooltipComponent])
 
 const loading = ref(false)
 const snapshot = ref(null)
@@ -121,6 +121,19 @@ const deltaType = (value, reverse = false) => {
 
 const cleanableSuggestions = computed(() => (snapshot.value?.suggestions || []).filter((item) => item.cleanable))
 const topImpactGroups = computed(() => (snapshot.value?.appGroups || []).slice(0, 4))
+const cleanupChartItems = computed(() =>
+  [...cleanableSuggestions.value]
+    .sort((a, b) => Number(b.memoryGb || 0) - Number(a.memoryGb || 0))
+    .slice(0, 3)
+)
+const reclaimableMemoryGb = computed(() =>
+  cleanableSuggestions.value.reduce((total, item) => total + Number(item.memoryGb || 0), 0)
+)
+const latestSampleClock = computed(() => {
+  if (!snapshot.value?.capturedAt) return '--:--:--'
+  const date = new Date(snapshot.value.capturedAt)
+  return Number.isNaN(date.getTime()) ? '--:--:--' : date.toLocaleTimeString('zh-CN', { hour12: false })
+})
 const compareA = computed(() => compareSnapshots.value[0] || null)
 const compareB = computed(() => compareSnapshots.value[1] || null)
 const diskDrives = computed(() => diskCheck.value?.drives || [])
@@ -1052,35 +1065,279 @@ const scoreOption = computed(() => {
 })
 
 const trendOption = computed(() => ({
-  tooltip: { trigger: 'axis' },
-  legend: { textStyle: { color: '#a8b9ca' }, top: 0 },
-  grid: { left: 36, right: 18, top: 40, bottom: 16 },
-  xAxis: { type: 'category', data: trend.value.map((item) => item.time), axisLabel: { color: '#8ca1b5' } },
-  yAxis: { type: 'value', min: 0, max: 100, axisLabel: { color: '#8ca1b5' }, splitLine: { lineStyle: { color: '#243648' } } },
+  tooltip: {
+    trigger: 'axis',
+    backgroundColor: 'rgba(5, 17, 27, 0.96)',
+    borderColor: '#1f6076',
+    textStyle: { color: '#d9e9f3' }
+  },
+  legend: {
+    textStyle: { color: '#9bb0c0', fontSize: 11 },
+    itemWidth: 20,
+    itemHeight: 8,
+    top: 0
+  },
+  grid: { left: 40, right: 18, top: 38, bottom: 26 },
+  xAxis: {
+    type: 'category',
+    boundaryGap: false,
+    data: trend.value.map((item) => item.time),
+    axisLine: { lineStyle: { color: '#385064' } },
+    axisTick: { show: false },
+    axisLabel: { color: '#8298aa', fontSize: 10, hideOverlap: true }
+  },
+  yAxis: {
+    type: 'value',
+    min: 0,
+    max: 100,
+    axisLine: { show: false },
+    axisTick: { show: false },
+    axisLabel: { color: '#8298aa', fontSize: 10 },
+    splitLine: { lineStyle: { color: 'rgba(76, 116, 143, 0.28)', type: 'dashed' } }
+  },
   series: [
-    { name: 'CPU', type: 'line', smooth: true, data: trend.value.map((item) => item.cpu), color: '#48a9f8' },
-    { name: '内存', type: 'line', smooth: true, data: trend.value.map((item) => item.memory), color: '#24d6a5' },
-    { name: '评分', type: 'line', smooth: true, data: trend.value.map((item) => item.score), color: '#ff6275' }
+    {
+      name: 'CPU',
+      type: 'line',
+      smooth: 0.35,
+      symbol: 'circle',
+      symbolSize: 5,
+      showSymbol: trend.value.length <= 1,
+      data: trend.value.map((item) => item.cpu),
+      lineStyle: { width: 2, color: '#45aaff' },
+      itemStyle: { color: '#45aaff', borderColor: '#d7efff', borderWidth: 1 }
+    },
+    {
+      name: '内存',
+      type: 'line',
+      smooth: 0.35,
+      symbol: 'circle',
+      symbolSize: 5,
+      showSymbol: trend.value.length <= 1,
+      data: trend.value.map((item) => item.memory),
+      lineStyle: { width: 2, color: '#58d3ae' },
+      itemStyle: { color: '#58d3ae', borderColor: '#d9fff2', borderWidth: 1 }
+    },
+    {
+      name: '评分',
+      type: 'line',
+      smooth: 0.35,
+      symbol: 'circle',
+      symbolSize: 5,
+      showSymbol: trend.value.length <= 1,
+      data: trend.value.map((item) => item.score),
+      lineStyle: { width: 2, color: '#ff626c' },
+      itemStyle: { color: '#ff626c', borderColor: '#fff1f2', borderWidth: 1 }
+    }
   ]
 }))
 
-const resourceOption = computed(() => {
+const pressureRows = computed(() => {
   const system = snapshot.value?.system || {}
+  const topProcess = topImpactGroups.value[0]
+  const totalMemoryGb = Number(system.memoryTotal || 0) / 1024 ** 3
+  const processPressure = topProcess
+    ? Math.min(100, Math.max(
+      Number(topProcess.cpuPercent || 0),
+      totalMemoryGb ? (Number(topProcess.workingSetGb || 0) / totalMemoryGb) * 100 : 0
+    ))
+    : 0
+  return [
+    { name: 'CPU', value: Number(system.cpuPercent || 0), display: `${Number(system.cpuPercent || 0).toFixed(2)}%`, color: '#45aaff' },
+    { name: '内存', value: Number(system.memoryPercent || 0), display: `${Number(system.memoryPercent || 0).toFixed(2)}%`, color: '#ff626c' },
+    {
+      name: '进程压力',
+      value: processPressure,
+      display: topProcess ? `${topProcess.name} (${Number(topProcess.workingSetGb || 0).toFixed(2)}GB)` : '暂无',
+      color: '#f3a62f'
+    }
+  ]
+})
+
+const pressureOption = computed(() => ({
+  animationDuration: 480,
+  grid: { left: 70, right: 112, top: 8, bottom: 24 },
+  xAxis: {
+    type: 'value',
+    min: 0,
+    max: 100,
+    interval: 50,
+    axisLine: { show: false },
+    axisTick: { show: false },
+    axisLabel: { color: '#70889a', fontSize: 9, formatter: '{value}%' },
+    splitLine: { lineStyle: { color: 'rgba(93, 128, 151, 0.22)', type: 'dashed' } }
+  },
+  yAxis: {
+    type: 'category',
+    inverse: true,
+    data: pressureRows.value.map((item) => item.name),
+    axisLine: { show: false },
+    axisTick: { show: false },
+    axisLabel: { color: '#d8e5ee', fontSize: 12, fontWeight: 700 }
+  },
+  tooltip: {
+    trigger: 'item',
+    backgroundColor: 'rgba(5, 17, 27, 0.96)',
+    borderColor: '#1f6076',
+    textStyle: { color: '#d9e9f3' },
+    formatter: (params) => `${params.name}<br>${params.data.display}`
+  },
+  series: [
+    {
+      type: 'bar',
+      barWidth: 12,
+      showBackground: true,
+      backgroundStyle: {
+        color: '#142536',
+        borderColor: '#31485a',
+        borderWidth: 1,
+        borderRadius: 6
+      },
+      itemStyle: { borderRadius: 6 },
+      label: {
+        show: true,
+        position: 'right',
+        distance: 12,
+        color: '#dce9f2',
+        fontSize: 11,
+        fontWeight: 700,
+        formatter: (params) => params.data.display
+      },
+      data: pressureRows.value.map((item) => ({
+        value: item.value,
+        display: item.display,
+        itemStyle: {
+          color: item.color,
+          shadowBlur: item.name === '内存' && item.value >= 90 ? 10 : 0,
+          shadowColor: item.color
+        }
+      }))
+    }
+  ]
+}))
+
+const cleanupCapacityOption = computed(() => {
+  const system = snapshot.value?.system || {}
+  const totalMemoryGb = Number(system.memoryTotal || 0) / 1024 ** 3
+  const reclaimable = reclaimableMemoryGb.value
+  const ratio = totalMemoryGb ? Math.min(100, (reclaimable / totalMemoryGb) * 100) : 0
   return {
-    tooltip: { trigger: 'item' },
+    animationDuration: 520,
+    tooltip: { show: false },
     series: [
       {
         type: 'pie',
-        radius: ['48%', '72%'],
-        label: { color: '#c9d6e2', formatter: '{b}\n{d}%' },
+        radius: ['69%', '82%'],
+        center: ['50%', '52%'],
+        silent: true,
+        label: { show: false },
         data: [
-          { name: '内存已用', value: system.memoryUsed || 0, itemStyle: { color: '#24d6a5' } },
-          { name: '内存空闲', value: system.memoryFree || 0, itemStyle: { color: '#34475c' } }
+          { value: ratio, itemStyle: { color: '#48c9df', shadowBlur: 10, shadowColor: 'rgba(72, 201, 223, 0.4)' } },
+          { value: 100 - ratio, itemStyle: { color: '#1a3140' } }
         ]
       }
     ]
   }
 })
+
+const cleanupOption = computed(() => {
+  const colors = ['#ff626c', '#f3a62f', '#58c7a5']
+  const items = cleanupChartItems.value
+  return {
+    animationDuration: 520,
+    grid: { left: 86, right: 58, top: 6, bottom: 12 },
+    xAxis: {
+      type: 'value',
+      min: 0,
+      axisLine: { show: false },
+      axisTick: { show: false },
+      axisLabel: { show: false },
+      splitLine: { show: false }
+    },
+    yAxis: {
+      type: 'category',
+      inverse: true,
+      data: items.map((item) => item.processName || '未命名'),
+      axisLine: { show: false },
+      axisTick: { show: false },
+      axisLabel: { color: '#dce8f1', fontSize: 11, width: 76, overflow: 'truncate' }
+    },
+    tooltip: {
+      trigger: 'item',
+      backgroundColor: 'rgba(5, 17, 27, 0.96)',
+      borderColor: '#1f6076',
+      textStyle: { color: '#d9e9f3' },
+      formatter: (params) => `${params.name}<br>可释放 ${Number(params.value).toFixed(2)} GB<br>点击清理该进程`
+    },
+    series: [
+      {
+        type: 'bar',
+        barWidth: 16,
+        showBackground: true,
+        backgroundStyle: { color: '#142536', borderRadius: 2 },
+        itemStyle: { borderRadius: 2 },
+        label: {
+          show: true,
+          position: 'right',
+          color: '#f2f7fa',
+          fontSize: 11,
+          fontWeight: 700,
+          formatter: ({ value }) => `${Number(value).toFixed(2)}GB`
+        },
+        data: items.map((item, index) => ({
+          value: Number(item.memoryGb || 0),
+          itemStyle: { color: colors[index] || '#58c7a5' }
+        }))
+      }
+    ]
+  }
+})
+
+const resourceOption = computed(() => {
+  const system = snapshot.value?.system || {}
+  return {
+    tooltip: {
+      trigger: 'item',
+      backgroundColor: 'rgba(5, 17, 27, 0.96)',
+      borderColor: '#1f6076',
+      textStyle: { color: '#d9e9f3' }
+    },
+    legend: {
+      orient: 'vertical',
+      left: 8,
+      top: 'middle',
+      icon: 'circle',
+      itemWidth: 9,
+      itemHeight: 9,
+      itemGap: 18,
+      textStyle: { color: '#9db1c0', fontSize: 11 }
+    },
+    series: [
+      {
+        type: 'pie',
+        center: ['67%', '49%'],
+        radius: ['49%', '70%'],
+        startAngle: 90,
+        label: { color: '#c9d6e2', fontSize: 10, formatter: '{b}\n{d}%' },
+        labelLine: { length: 10, length2: 20, lineStyle: { color: '#4c7187' } },
+        data: [
+          { name: '内存已用', value: system.memoryUsed || 0, itemStyle: { color: '#65d4ae' } },
+          { name: '内存空闲', value: system.memoryFree || 0, itemStyle: { color: '#395164' } }
+        ]
+      }
+    ]
+  }
+})
+
+const handleCleanupChartClick = (params) => {
+  const item = cleanupChartItems.value[params.dataIndex]
+  if (item) cleanupProcess(item)
+}
+
+const cleanupTopSuggestion = () => {
+  const item = cleanupChartItems.value[0]
+  if (item) cleanupProcess(item)
+}
 
 const compareRows = computed(() => {
   if (!compareA.value || !compareB.value) return []
@@ -1204,10 +1461,29 @@ onBeforeUnmount(() => {
 <template>
   <main class="app-shell">
     <header class="topbar">
+      <div class="topbar-ornament" aria-hidden="true">
+        <span class="ornament-corner ornament-corner-left"></span>
+        <span class="ornament-corner ornament-corner-right"></span>
+        <span class="ornament-segment ornament-left"></span>
+        <span class="ornament-node ornament-node-left"></span>
+        <span class="ornament-bridge ornament-bridge-left"></span>
+        <span class="ornament-spine"></span>
+        <span class="ornament-bridge ornament-bridge-right"></span>
+        <span class="ornament-segment ornament-center"></span>
+        <span class="ornament-node ornament-node-right"></span>
+        <span class="ornament-segment ornament-right"></span>
+      </div>
       <section>
         <div class="eyebrow">LOCAL SYSTEM OBSERVER</div>
         <h1>WinStatusInsight</h1>
       </section>
+      <div class="system-status" aria-label="系统采样状态">
+        <span><i></i>系统运行</span>
+        <b>{{ latestSampleClock }}</b>
+        <span class="status-divider"></span>
+        <span>采样间隔</span>
+        <b>2s</b>
+      </div>
       <nav class="actions command-bar">
         <el-button class="command-button command-primary" :loading="loading" @click="readStatus">
           <Activity class="command-primary-icon" :size="18" />
@@ -1319,9 +1595,29 @@ onBeforeUnmount(() => {
                   <feMergeNode in="SourceGraphic" />
                 </feMerge>
               </filter>
+              <filter id="gaugeSoftGlow" x="-30%" y="-30%" width="160%" height="160%">
+                <feGaussianBlur stdDeviation="2.2" result="softBlur" />
+                <feMerge>
+                  <feMergeNode in="softBlur" />
+                  <feMergeNode in="SourceGraphic" />
+                </feMerge>
+              </filter>
+              <radialGradient id="gaugeCoreGradient" cx="50%" cy="62%" r="58%">
+                <stop offset="0%" stop-color="#07131d" stop-opacity="0.96" />
+                <stop offset="62%" stop-color="#07131d" stop-opacity="0.74" />
+                <stop offset="100%" stop-color="#0c2637" stop-opacity="0.34" />
+              </radialGradient>
             </defs>
+            <circle class="gauge-scan-ring" cx="130" cy="124" r="119" />
+            <circle class="gauge-orbit" cx="130" cy="124" r="112" />
+            <path class="gauge-scan-arc" d="M 14 128 A 116 116 0 0 1 246 128" pathLength="100" />
             <circle class="gauge-face" cx="130" cy="124" r="78" />
+            <path class="gauge-outer-track" d="M 18 128 A 112 112 0 0 1 242 128" pathLength="100" />
+            <path class="gauge-zone gauge-zone-low" d="M 27 128 A 103 103 0 0 1 233 128" pathLength="100" />
+            <path class="gauge-zone gauge-zone-mid" d="M 27 128 A 103 103 0 0 1 233 128" pathLength="100" />
+            <path class="gauge-zone gauge-zone-high" d="M 27 128 A 103 103 0 0 1 233 128" pathLength="100" />
             <path class="gauge-track" d="M 27 128 A 103 103 0 0 1 233 128" pathLength="100" />
+            <path class="gauge-inner-track" d="M 40 128 A 90 90 0 0 1 220 128" pathLength="100" />
             <path
               class="gauge-energy"
               d="M 27 128 A 103 103 0 0 1 233 128"
@@ -1329,6 +1625,10 @@ onBeforeUnmount(() => {
               :stroke="loading || scoreAnimating || gaugeValue >= 70 ? 'url(#gaugeEnergyGradient)' : gaugeColor"
               :stroke-dasharray="`${gaugeValue} 100`"
             />
+            <g class="gauge-terminals">
+              <circle cx="27" cy="128" r="3.2" />
+              <circle cx="233" cy="128" r="3.2" />
+            </g>
             <g class="gauge-minor-ticks">
               <line
                 v-for="tick in gaugeMinorTicks"
@@ -1346,7 +1646,9 @@ onBeforeUnmount(() => {
               </g>
             </g>
             <polygon class="gauge-needle" :points="gaugeNeedle" />
+            <circle class="gauge-hub-outer" cx="130" cy="118" r="8.5" />
             <circle class="gauge-hub" cx="130" cy="118" r="5" />
+            <circle class="gauge-hub-core" cx="130" cy="118" r="2.2" />
             <line
               class="gauge-pointer"
               :class="{ active: loading || scoreAnimating }"
@@ -1355,6 +1657,7 @@ onBeforeUnmount(() => {
               :x2="gaugePointer.x2"
               :y2="gaugePointer.y2"
             />
+            <rect class="gauge-score-badge" x="104" y="128" width="52" height="22" rx="5" />
             <g class="gauge-score-text">
               <text class="gauge-score-value" x="130" y="105">{{ scoreDisplayValue }}</text>
               <text class="gauge-score-label" x="130" y="142" :fill="gaugeStatusColor">{{ gaugeStatusLabel }}</text>
@@ -1377,30 +1680,12 @@ onBeforeUnmount(() => {
           <ShieldAlert :size="18" />
           当前瓶颈
         </div>
-        <div v-if="snapshot" class="metric-list compact">
-          <div class="metric">
-            <span>CPU</span>
-            <strong>{{ snapshot.system.cpuPercent }}%</strong>
-          </div>
-          <div class="metric">
-            <span>内存</span>
-            <strong>{{ snapshot.system.memoryPercent }}%</strong>
-          </div>
-        </div>
+        <VChart v-if="snapshot" class="pressure-chart" :option="pressureOption" autoresize />
         <el-empty v-else description="点击读取状态开始分析" :image-size="84" />
-        <div v-if="snapshot" class="bottlenecks">
-          <el-tag v-for="item in snapshot.analysis.bottlenecks" :key="item.type" effect="dark" type="warning">
-            {{ item.type }}：{{ item.text }}
-          </el-tag>
-        </div>
-        <div v-if="snapshot && topImpactGroups.length" class="impact-list">
-          <div v-for="item in topImpactGroups" :key="item.name" class="impact-row">
-            <div>
-              <strong>{{ item.name }}</strong>
-              <small>{{ item.count }} 个进程 · {{ riskLabel(item.risk) }}</small>
-            </div>
-            <span>{{ item.cpuPercent }}% / {{ item.workingSetGb }}GB</span>
-          </div>
+        <div v-if="snapshot" class="pressure-legend">
+          <span><i class="normal"></i>正常</span>
+          <span><i class="warning"></i>注意</span>
+          <span><i class="danger"></i>严重</span>
         </div>
       </article>
     </section>
@@ -1411,17 +1696,34 @@ onBeforeUnmount(() => {
           <Database :size="18" />
           建议清理
         </div>
-        <div v-if="snapshot && cleanableSuggestions.length" class="suggestion-list">
-          <div v-for="item in cleanableSuggestions" :key="`${item.processName}-${item.pid}`" class="suggestion" :class="item.level">
-            <div class="suggestion-copy">
-              <strong>{{ item.title }} {{ item.processName ? `· ${item.processName}` : '' }}</strong>
-              <p>{{ item.text }}</p>
+        <div v-if="snapshot && cleanupChartItems.length" class="cleanup-dashboard">
+          <div class="cleanup-capacity">
+            <VChart class="cleanup-capacity-chart" :option="cleanupCapacityOption" autoresize />
+            <div class="cleanup-capacity-value">
+              <small>可释放</small>
+              <strong>{{ reclaimableMemoryGb.toFixed(2) }} GB</strong>
             </div>
-            <div class="suggestion-action">
-              <span>{{ item.cpuPercent }}% / {{ item.memoryGb }}GB</span>
-              <el-button size="small" type="danger" :loading="cleaningPid === item.pid" @click="cleanupProcess(item)">
+            <span>占用总量 {{ ((reclaimableMemoryGb / (snapshot.system.memoryTotal / 1024 ** 3)) * 100).toFixed(2) }}%</span>
+          </div>
+          <div class="cleanup-ranking">
+            <div class="cleanup-heading">
+              <span>清理机会</span>
+              <small>按可释放容量排序</small>
+            </div>
+            <VChart class="cleanup-chart" :option="cleanupOption" autoresize @click="handleCleanupChartClick" />
+            <div class="cleanup-footer">
+              <div>
+                <span><i class="high"></i>高优先级</span>
+                <span><i class="medium"></i>中优先级</span>
+                <span><i class="low"></i>低优先级</span>
+              </div>
+              <el-button
+                size="small"
+                :loading="cleaningPid === cleanupChartItems[0]?.pid"
+                @click="cleanupTopSuggestion"
+              >
                 <Trash2 :size="14" />
-                清理
+                清理首项
               </el-button>
             </div>
           </div>
@@ -1430,7 +1732,10 @@ onBeforeUnmount(() => {
       </article>
 
       <article class="panel memory-panel">
-        <div class="panel-title">内存结构</div>
+        <div class="panel-title">
+          <Database :size="18" />
+          内存结构
+        </div>
         <VChart class="memory-chart" :option="resourceOption" autoresize />
         <div v-if="snapshot" class="memory-caption">
           已用 {{ formatBytes(snapshot.system.memoryUsed) }} / 总计 {{ formatBytes(snapshot.system.memoryTotal) }}

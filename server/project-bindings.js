@@ -191,15 +191,24 @@ async function readListeningProcessDetails() {
     }
   }
 
-  const processOutput = await execFileText('ps', ['-axo', 'pid=,command=']).catch(() => '')
+  const processOutput = await execFileText('ps', ['-axo', 'pid=,pgid=,command=']).catch(() => '')
   const commands = new Map()
+  const processGroups = new Map()
   for (const line of processOutput.split('\n')) {
-    const match = line.match(/^\s*(\d+)\s+(.+)$/)
+    const match = line.match(/^\s*(\d+)\s+(\d+)\s+(.+)$/)
     if (!match) continue
-    commands.set(Number(match[1]), match[2])
+    commands.set(Number(match[1]), match[3])
+    processGroups.set(Number(match[1]), Number(match[2]))
   }
 
-  return { portToPids, pidToPorts, commands }
+  const workingDirectories = new Map()
+  await Promise.all([...pidToPorts.keys()].map(async (pid) => {
+    const output = await execFileText('lsof', ['-a', '-p', String(pid), '-d', 'cwd', '-Fn'])
+    const cwd = output.split('\n').find((line) => line.startsWith('n'))?.slice(1)
+    if (cwd) workingDirectories.set(pid, cwd)
+  }))
+
+  return { portToPids, pidToPorts, commands, processGroups, workingDirectories }
 }
 
 function findPortsForModule(module, details) {
@@ -208,10 +217,35 @@ function findPortsForModule(module, details) {
   const matches = []
   for (const [pid, ports] of details.pidToPorts.entries()) {
     const command = normalizePathText(details.commands.get(pid) || '')
-    if (!command.includes(modulePath)) continue
+    const cwd = normalizePathText(details.workingDirectories.get(pid) || '')
+    const belongsToModule =
+      command.includes(modulePath) ||
+      cwd === modulePath ||
+      cwd.startsWith(`${modulePath}/`)
+    if (!belongsToModule) continue
     for (const port of ports) matches.push({ pid, port })
   }
   return matches.sort((a, b) => a.port - b.port)
+}
+
+function killProcessTree(pid, details) {
+  if (!Number.isInteger(pid) || pid <= 0 || pid === process.pid) return false
+  const ownProcessGroup = details.processGroups.get(process.pid)
+  const processGroup = details.processGroups.get(pid)
+  if (processGroup && processGroup !== ownProcessGroup) {
+    try {
+      process.kill(-processGroup, 'SIGTERM')
+      return true
+    } catch {
+      // Fall back to the listener process when the group is already gone.
+    }
+  }
+  try {
+    process.kill(pid, 'SIGTERM')
+    return true
+  } catch {
+    return false
+  }
 }
 
 async function readPortFromLog(logPath) {
@@ -297,7 +331,10 @@ export function createProjectBindingsService({ dataDir, lanAddresses = () => [] 
         const configuredPortPids = configuredPort ? listeningDetails.portToPids.get(configuredPort) || [] : []
         const matchedPort = moduleMatches[0]?.port || null
         const loggedPortPids = logPort ? listeningDetails.portToPids.get(Number(logPort)) || [] : []
-        const listenerPort = matchedPort || (configuredPortPids.length ? configuredPort : null) || (loggedPortPids.length ? logPort : null)
+        const listenerPort =
+          matchedPort ||
+          (run && configuredPortPids.length ? configuredPort : null) ||
+          (run && loggedPortPids.length ? logPort : null)
         const effectivePort = listenerPort || logPort || configuredPort || null
         const portPids = listenerPort ? listeningDetails.portToPids.get(Number(listenerPort)) || [] : []
         const modulePids = moduleMatches.map((item) => item.pid)
@@ -421,22 +458,43 @@ export function createProjectBindingsService({ dataDir, lanAddresses = () => [] 
   }
 
   async function stop(id) {
+    const bindings = await readJson(bindingFile, [])
+    const binding = bindings.find((item) => item.id === id)
+    if (!binding) throw new Error('未找到绑定项目')
+
+    const details = await readListeningProcessDetails()
     const stopped = []
-    for (const [key, run] of [...running.entries()]) {
-      if (!key.startsWith(`${id}:`)) continue
-      try {
-        process.kill(-run.pid, 'SIGTERM')
-      } catch {
-        try {
-          process.kill(run.pid, 'SIGTERM')
-        } catch {
-          // Already gone.
+    const stoppedProcesses = []
+
+    for (const mod of binding.modules || []) {
+      const key = `${id}:${mod.id}`
+      const run = running.get(key)
+      const moduleMatches = findPortsForModule(mod, details)
+      const targetPids = new Set(moduleMatches.map((item) => item.pid))
+
+      if (run?.pid) {
+        targetPids.add(run.pid)
+        const configuredPort = Number(mod.port || 0)
+        if (configuredPort) {
+          for (const pid of details.portToPids.get(configuredPort) || []) targetPids.add(pid)
+        }
+        const logPort = await readPortFromLog(run.logPath)
+        if (logPort) {
+          for (const pid of details.portToPids.get(logPort) || []) targetPids.add(pid)
         }
       }
+
+      let moduleStopped = false
+      for (const pid of targetPids) {
+        if (!killProcessTree(pid, details)) continue
+        moduleStopped = true
+        stoppedProcesses.push({ moduleId: mod.id, pid })
+      }
+
       running.delete(key)
-      stopped.push({ key, pid: run.pid })
+      if (moduleStopped) stopped.push({ key, moduleId: mod.id, pid: run?.pid || [...targetPids][0] || null })
     }
-    return { ok: true, stopped }
+    return { ok: true, stopped, stoppedProcesses }
   }
 
   async function logs(id) {
