@@ -1,6 +1,6 @@
 <script setup>
 import { computed, onBeforeUnmount, onMounted, ref, watch } from 'vue'
-import { ElMessage } from 'element-plus'
+import { ElMessage, ElMessageBox } from 'element-plus'
 import VChart from 'vue-echarts'
 import { use } from 'echarts/core'
 import { CanvasRenderer } from 'echarts/renderers'
@@ -8,13 +8,15 @@ import { BarChart, GaugeChart, LineChart, PieChart } from 'echarts/charts'
 import { GridComponent, LegendComponent, TooltipComponent } from 'echarts/components'
 import {
   Activity,
+  Bot,
   Database,
   FolderOpen,
   Gauge,
   RefreshCcw,
   Settings,
   ShieldAlert,
-  Trash2
+  Trash2,
+  Wrench
 } from 'lucide-vue-next'
 
 use([CanvasRenderer, BarChart, GaugeChart, LineChart, PieChart, GridComponent, LegendComponent, TooltipComponent])
@@ -56,6 +58,25 @@ const scoreAnimating = ref(false)
 const settingsVisible = ref(false)
 const desktopSettings = ref({ closeToTray: false, localProjectAlertsEnabled: true })
 const desktopSettingsLoading = ref(false)
+const aiSettings = ref({
+  provider: 'deepseek',
+  baseUrl: 'https://api.deepseek.com',
+  model: 'deepseek-v4-flash',
+  enabled: false,
+  maskedKey: ''
+})
+const aiApiKeyInput = ref('')
+const aiSettingsLoading = ref(false)
+const aiSettingsSaving = ref(false)
+const aiSettingsTesting = ref(false)
+const diagnosisVisible = ref(false)
+const diagnosisLoading = ref(false)
+const diagnosisFixing = ref(false)
+const diagnosisResult = ref(null)
+const diagnosisSelectedCommands = ref([])
+const diagnosisCurrentBinding = ref(null)
+const diagnosisCurrentModule = ref(null)
+const diagnosingModuleId = ref('')
 const updateChecking = ref(false)
 const updateInstalling = ref(false)
 const updateInfo = ref(null)
@@ -111,6 +132,23 @@ const moduleStatusLabel = (status) => {
   if (status === 'starting') return '启动中'
   if (status === 'error') return '异常'
   return '已停止'
+}
+
+const moduleNeedsDiagnosis = (module = {}) =>
+  module.status === 'error' ||
+  Boolean(module.lastError) ||
+  (module.enabled && !Number(module.port || 0) && (!module.urls || module.urls.length === 0))
+
+const diagnosisRiskType = (risk) => {
+  if (risk === 'high') return 'danger'
+  if (risk === 'low') return 'success'
+  return 'warning'
+}
+
+const diagnosisRiskLabel = (risk) => {
+  if (risk === 'high') return '高风险'
+  if (risk === 'low') return '低风险'
+  return '需确认'
 }
 
 const deltaType = (value, reverse = false) => {
@@ -466,6 +504,67 @@ const updateLocalProjectAlerts = async (value) => {
     ElMessage.error(error.message)
   } finally {
     desktopSettingsLoading.value = false
+  }
+}
+
+const loadAiSettings = async () => {
+  aiSettingsLoading.value = true
+  try {
+    const response = await fetch('/api/ai-settings')
+    const result = await response.json()
+    if (!response.ok) throw new Error(result.message || '读取 AI 设置失败')
+    aiSettings.value = { ...aiSettings.value, ...result }
+    aiApiKeyInput.value = ''
+  } catch (error) {
+    ElMessage.error(error.message)
+  } finally {
+    aiSettingsLoading.value = false
+  }
+}
+
+const saveAiSettings = async () => {
+  aiSettingsSaving.value = true
+  try {
+    const response = await fetch('/api/ai-settings', {
+      method: 'PUT',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        baseUrl: aiSettings.value.baseUrl,
+        model: aiSettings.value.model,
+        apiKey: aiApiKeyInput.value.trim()
+      })
+    })
+    const result = await response.json()
+    if (!response.ok) throw new Error(result.message || '保存 AI 设置失败')
+    aiSettings.value = { ...aiSettings.value, ...result }
+    aiApiKeyInput.value = ''
+    ElMessage.success('AI 诊断配置已保存')
+  } catch (error) {
+    ElMessage.error(error.message)
+  } finally {
+    aiSettingsSaving.value = false
+  }
+}
+
+const testAiSettings = async () => {
+  aiSettingsTesting.value = true
+  try {
+    const response = await fetch('/api/ai-settings/test', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        baseUrl: aiSettings.value.baseUrl,
+        model: aiSettings.value.model,
+        apiKey: aiApiKeyInput.value.trim()
+      })
+    })
+    const result = await response.json()
+    if (!response.ok) throw new Error(result.message || 'DeepSeek 连接测试失败')
+    ElMessage.success(result.message || 'DeepSeek 连接正常')
+  } catch (error) {
+    ElMessage.error(error.message)
+  } finally {
+    aiSettingsTesting.value = false
   }
 }
 
@@ -875,6 +974,70 @@ const showProjectBindingLogs = async (binding) => {
     ElMessage.error(error.message)
   } finally {
     bindingActionId.value = ''
+  }
+}
+
+const diagnoseProjectModule = async (binding, module) => {
+  diagnosisVisible.value = true
+  diagnosisLoading.value = true
+  diagnosisResult.value = null
+  diagnosisSelectedCommands.value = []
+  diagnosisCurrentBinding.value = binding
+  diagnosisCurrentModule.value = module
+  diagnosingModuleId.value = module.id
+  try {
+    const response = await fetch(`/api/project-bindings/${binding.id}/modules/${module.id}/diagnose`, {
+      method: 'POST'
+    })
+    const result = await response.json()
+    if (!response.ok) throw new Error(result.message || 'AI 诊断失败')
+    diagnosisResult.value = result
+    diagnosisSelectedCommands.value = (result.diagnosis?.commands || []).map((item) => item.command)
+  } catch (error) {
+    ElMessage.error(error.message)
+    if (/api key/i.test(error.message) || error.message.includes('API Key')) settingsVisible.value = true
+  } finally {
+    diagnosisLoading.value = false
+    diagnosingModuleId.value = ''
+  }
+}
+
+const executeDiagnosisFix = async () => {
+  const binding = diagnosisCurrentBinding.value
+  const module = diagnosisCurrentModule.value
+  const commands = (diagnosisResult.value?.diagnosis?.commands || [])
+    .filter((item) => diagnosisSelectedCommands.value.includes(item.command))
+  if (!binding || !module || !commands.length) {
+    ElMessage.warning('请先选择要执行的修复命令')
+    return
+  }
+  try {
+    await ElMessageBox.confirm(
+      `将按顺序执行 ${commands.length} 条修复命令，执行目录固定在项目范围内。执行完成后会重新启动该绑定项目。`,
+      '确认执行 AI 修复',
+      { confirmButtonText: '执行', cancelButtonText: '取消', type: 'warning' }
+    )
+  } catch {
+    return
+  }
+  diagnosisFixing.value = true
+  try {
+    const response = await fetch(`/api/project-bindings/${binding.id}/modules/${module.id}/fix`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ commands })
+    })
+    const result = await response.json()
+    if (!response.ok) throw new Error(result.message || '执行修复失败')
+    diagnosisResult.value = { ...diagnosisResult.value, fixResult: result }
+    if (!result.ok) throw new Error('部分修复命令执行失败，请查看执行输出或日志。')
+    ElMessage.success('修复命令执行完成，正在重新启动项目')
+    await startProjectBinding(binding)
+    await showProjectBindingLogs(binding)
+  } catch (error) {
+    ElMessage.error(error.message)
+  } finally {
+    diagnosisFixing.value = false
   }
 }
 
@@ -1437,7 +1600,7 @@ const compareAnalysis = computed(() => {
 })
 
 onMounted(async () => {
-  await Promise.all([loadHistory(), loadDesktopSettings()])
+  await Promise.all([loadHistory(), loadDesktopSettings(), loadAiSettings()])
   removeUpdateStatusListener = desktopApi.value?.onUpdateStatus?.(handleUpdateStatus) || null
   desktopApi.value?.onNavigateTab?.((tabName) => {
     activeTab.value = tabName
@@ -1500,7 +1663,7 @@ onBeforeUnmount(() => {
       </nav>
     </header>
 
-    <el-dialog v-model="settingsVisible" title="设置" width="420px" align-center>
+    <el-dialog v-model="settingsVisible" title="设置" width="560px" align-center>
       <div class="settings-list">
         <div class="settings-row">
           <div>
@@ -1523,6 +1686,28 @@ onBeforeUnmount(() => {
             :loading="desktopSettingsLoading"
             @change="updateLocalProjectAlerts"
           />
+        </div>
+        <div class="settings-row ai-settings-row">
+          <div class="ai-settings-copy">
+            <strong>AI 本地项目诊断</strong>
+            <span>
+              使用 DeepSeek 分析启动日志和项目依赖，只执行环境安装、restore/build/run 和已有启动脚本，不自动修改代码。Key 只保存在本机，当前状态：
+              {{ aiSettings.enabled ? `已配置 ${aiSettings.maskedKey}` : '未配置' }}
+            </span>
+            <div class="ai-settings-form">
+              <el-input v-model="aiApiKeyInput" type="password" show-password placeholder="DeepSeek API Key，留空则保留已保存密钥" />
+              <el-input v-model="aiSettings.baseUrl" placeholder="https://api.deepseek.com" />
+              <el-select v-model="aiSettings.model" placeholder="选择模型">
+                <el-option label="deepseek-v4-flash" value="deepseek-v4-flash" />
+                <el-option label="deepseek-v4-pro" value="deepseek-v4-pro" />
+              </el-select>
+            </div>
+          </div>
+          <div class="settings-actions">
+            <el-button class="settings-button" size="small" :loading="aiSettingsLoading" @click="loadAiSettings">刷新</el-button>
+            <el-button class="settings-button" size="small" :loading="aiSettingsTesting" @click="testAiSettings">测试</el-button>
+            <el-button class="settings-button primary" size="small" :loading="aiSettingsSaving" @click="saveAiSettings">保存</el-button>
+          </div>
         </div>
         <div class="settings-row update-row">
           <div>
@@ -1565,6 +1750,74 @@ onBeforeUnmount(() => {
           <pre>{{ entry.log || '暂无日志' }}</pre>
         </section>
       </div>
+    </el-dialog>
+
+    <el-dialog
+      v-model="diagnosisVisible"
+      :title="diagnosisCurrentModule ? `${diagnosisCurrentModule.name} AI 诊断` : 'AI 诊断'"
+      width="760px"
+      align-center
+    >
+      <div v-loading="diagnosisLoading" class="diagnosis-panel">
+        <template v-if="diagnosisResult?.diagnosis">
+          <section class="diagnosis-summary">
+            <el-tag :type="diagnosisRiskType(diagnosisResult.diagnosis.commands?.[0]?.risk)">
+              {{ diagnosisResult.diagnosis.category || 'unknown' }}
+            </el-tag>
+            <strong>{{ diagnosisResult.diagnosis.summary }}</strong>
+            <p>{{ diagnosisResult.diagnosis.rootCause || 'AI 未给出明确根因，请结合日志继续检查。' }}</p>
+          </section>
+
+          <section v-if="diagnosisResult.diagnosis.evidence?.length" class="diagnosis-section">
+            <h3>判断依据</h3>
+            <ul>
+              <li v-for="item in diagnosisResult.diagnosis.evidence" :key="item">{{ item }}</li>
+            </ul>
+          </section>
+
+          <section v-if="diagnosisResult.diagnosis.commands?.length" class="diagnosis-section">
+            <h3>可确认执行的环境修复命令</h3>
+            <el-checkbox-group v-model="diagnosisSelectedCommands" class="diagnosis-command-list">
+              <label v-for="command in diagnosisResult.diagnosis.commands" :key="command.id" class="diagnosis-command">
+                <el-checkbox :label="command.command" />
+                <div>
+                  <strong>{{ command.title }}</strong>
+                  <code>{{ command.command }}</code>
+                  <span>{{ command.cwd === 'root' ? '项目根目录' : '模块目录' }} · {{ diagnosisRiskLabel(command.risk) }} · {{ command.reason }}</span>
+                </div>
+              </label>
+            </el-checkbox-group>
+          </section>
+
+          <section v-if="diagnosisResult.diagnosis.warnings?.length" class="diagnosis-section">
+            <h3>注意事项</h3>
+            <ul>
+              <li v-for="item in diagnosisResult.diagnosis.warnings" :key="item">{{ item }}</li>
+            </ul>
+          </section>
+
+          <section v-if="diagnosisResult.fixResult" class="diagnosis-section">
+            <h3>执行结果</h3>
+            <div v-for="item in diagnosisResult.fixResult.results" :key="`${item.command}-${item.code}`" class="diagnosis-output">
+              <strong>{{ item.ok ? '完成' : '失败' }}：{{ item.command }}</strong>
+              <pre>{{ item.output || item.error || '无输出' }}</pre>
+            </div>
+          </section>
+        </template>
+        <el-empty v-else-if="!diagnosisLoading" description="暂无诊断结果" :image-size="72" />
+      </div>
+      <template #footer>
+        <el-button @click="diagnosisVisible = false">关闭</el-button>
+        <el-button
+          type="primary"
+          :disabled="!diagnosisResult?.diagnosis?.commands?.length || !diagnosisSelectedCommands.length"
+          :loading="diagnosisFixing"
+          @click="executeDiagnosisFix"
+        >
+          <Wrench :size="14" />
+          执行选中修复
+        </el-button>
+      </template>
     </el-dialog>
 
     <el-alert v-if="errorMessage" class="alert" type="error" :title="errorMessage" show-icon />
@@ -1904,7 +2157,13 @@ onBeforeUnmount(() => {
                     <el-button size="small" type="danger" plain :loading="bindingActionId === binding.id" @click="deleteProjectBinding(binding)">删除</el-button>
                   </div>
                 </header>
-                <el-table :data="binding.modules" size="small" stripe>
+                <el-table
+                  class="binding-modules-table"
+                  :data="binding.modules"
+                  :style="{ minHeight: `${38 + Math.max(binding.modules?.length || 1, 1) * 44}px` }"
+                  size="small"
+                  stripe
+                >
                   <el-table-column label="启用" width="72">
                     <template #default="{ row }">
                       <el-checkbox v-model="row.enabled" @change="() => updateProjectBinding(binding)" />
@@ -1932,6 +2191,20 @@ onBeforeUnmount(() => {
                         </el-link>
                       </div>
                       <span v-else>-</span>
+                    </template>
+                  </el-table-column>
+                  <el-table-column label="操作" width="116">
+                    <template #default="{ row }">
+                      <el-button
+                        v-if="moduleNeedsDiagnosis(row)"
+                        size="small"
+                        class="diagnose-button"
+                        :loading="diagnosingModuleId === row.id"
+                        @click="diagnoseProjectModule(binding, row)"
+                      >
+                        <Bot :size="14" />
+                        AI 诊断
+                      </el-button>
                     </template>
                   </el-table-column>
                 </el-table>

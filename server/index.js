@@ -2353,6 +2353,30 @@ app.post('/api/project-bindings/detect', async (req, res) => {
   }
 })
 
+app.get('/api/ai-settings', async (_req, res) => {
+  try {
+    res.json(await projectBindings.getAiSettings())
+  } catch (error) {
+    res.status(500).json({ message: error.message })
+  }
+})
+
+app.put('/api/ai-settings', async (req, res) => {
+  try {
+    res.json(await projectBindings.saveAiSettings(req.body || {}))
+  } catch (error) {
+    res.status(400).json({ message: error.message })
+  }
+})
+
+app.post('/api/ai-settings/test', async (req, res) => {
+  try {
+    res.json(await projectBindings.testAiSettings(req.body || {}))
+  } catch (error) {
+    res.status(400).json({ message: error.message })
+  }
+})
+
 app.post('/api/project-bindings', async (req, res) => {
   try {
     res.json(await projectBindings.create(req.body || {}))
@@ -2388,6 +2412,22 @@ app.post('/api/project-bindings/:id/start', async (req, res) => {
 app.post('/api/project-bindings/:id/stop', async (req, res) => {
   try {
     res.json(await projectBindings.stop(req.params.id))
+  } catch (error) {
+    res.status(400).json({ message: error.message })
+  }
+})
+
+app.post('/api/project-bindings/:id/modules/:moduleId/diagnose', async (req, res) => {
+  try {
+    res.json(await projectBindings.diagnoseModule(req.params.id, req.params.moduleId))
+  } catch (error) {
+    res.status(400).json({ message: error.message })
+  }
+})
+
+app.post('/api/project-bindings/:id/modules/:moduleId/fix', async (req, res) => {
+  try {
+    res.json(await projectBindings.fixModule(req.params.id, req.params.moduleId, req.body || {}))
   } catch (error) {
     res.status(400).json({ message: error.message })
   }

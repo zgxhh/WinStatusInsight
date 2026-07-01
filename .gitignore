@@ -4,6 +4,7 @@ release/
 data/snapshots/*.json
 data/snapshots/
 data/project-bindings.json
+data/ai-settings.json
 data/project-binding-logs/
 logs/
 output/
